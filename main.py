@@ -46,11 +46,16 @@ TOKEN_ID = os.getenv("TOKEN_ID", "0.0.10770973")
 hedera_client = None
 if HEDERA_SDK_AVAILABLE and OPERATOR_ID and OPERATOR_KEY:
     try:
-        hedera_client = Client.forTestnet()
-        hedera_client.setOperator(
-            AccountId.fromString(OPERATOR_ID),
-            PrivateKey.fromString(OPERATOR_KEY)
-        )
+        # 1. Initialize for Testnet using snake_case syntax
+        hedera_client = Client.for_testnet()
+        
+        # 2. Parse Operator Account ID and Private Key
+        op_id = AccountId.from_string(OPERATOR_ID)
+        op_key = PrivateKey.from_string(OPERATOR_KEY)
+        
+        # 3. Set the Operator on the Client
+        hedera_client.set_operator(op_id, op_key)
+        
         print("🟢 [HEDERA SDK] Connected to Hedera Testnet successfully.")
     except Exception as e:
         print(f"⚠️ [HEDERA SDK] Could not initialize live client: {e}")
@@ -92,19 +97,20 @@ def burn_tokens_on_hedera(token_id: str, amount_to_burn: float) -> str:
         try:
             tx = (
                 TokenBurnTransaction()
-                .setTokenId(TokenId.fromString(token_id))
-                .setAmount(smallest_unit)
-                .freezeWith(hedera_client)
+                .set_token_id(TokenId.from_string(token_id))
+                .set_amount(smallest_unit)
+                .freeze_with(hedera_client)
             )
             response = tx.execute(hedera_client)
-            receipt = response.getReceipt(hedera_client)
-            tx_hash = str(response.transactionId)
+            receipt = response.get_receipt(hedera_client)
+            tx_hash = str(response.transaction_id)
+            
             print(f"--- [HEDERA ON-CHAIN LIVE BURN] ---")
             print(f"Token ID: {token_id} | Burned: {amount_to_burn:,} MAIN")
             print(f"Consensus Status: {receipt.status} | Tx ID: {tx_hash}")
             return tx_hash
         except Exception as err:
-            print(f"⚠️ Live Hedera Burn error (falling back to relayer hash): {err}")
+            print(f"⚠️️ Live Hedera Burn error (falling back to relayer hash): {err}")
 
     timestamp_str = str(time.time()).replace('.', '')[:10]
     return f"{OPERATOR_ID}@{timestamp_str}.000000000"
@@ -116,13 +122,14 @@ def transfer_dev_revenue_on_hedera(token_id: str, dev_account_id: str, dev_amoun
         try:
             tx = (
                 TransferTransaction()
-                .addTokenTransfer(TokenId.fromString(token_id), AccountId.fromString(OPERATOR_ID), -smallest_unit)
-                .addTokenTransfer(TokenId.fromString(token_id), AccountId.fromString(dev_account_id), smallest_unit)
-                .freezeWith(hedera_client)
+                .add_token_transfer(TokenId.from_string(token_id), AccountId.from_string(OPERATOR_ID), -smallest_unit)
+                .add_token_transfer(TokenId.from_string(token_id), AccountId.from_string(dev_account_id), smallest_unit)
+                .freeze_with(hedera_client)
             )
             response = tx.execute(hedera_client)
-            receipt = response.getReceipt(hedera_client)
-            tx_hash = str(response.transactionId)
+            receipt = response.get_receipt(hedera_client)
+            tx_hash = str(response.transaction_id)
+            
             print(f"--- [HEDERA ON-CHAIN LIVE TRANSFER] ---")
             print(f"Routed {dev_amount:,} MAIN to Dev Treasury: {dev_account_id}")
             print(f"Consensus Status: {receipt.status} | Tx ID: {tx_hash}")
