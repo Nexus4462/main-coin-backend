@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  game-economy-api:
+    build: .
+    container_name: main_coin_api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite DB across container rebuilds
+      - ./game_economy.db:/app/game_economy.db
+    env_file:
+      - .env
+    restart: unless-stopped
