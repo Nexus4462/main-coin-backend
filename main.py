@@ -1,65 +1,43 @@
-import hashlib
-import hmac
-import math
 import os
-import sys
 import time
-from typing import Dict, Any, Optional
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+import hmac
+import hashlib
 import requests
-
-from sqlalchemy import create_engine, Column, String, Float, Integer, func
+from typing import Optional, List, Dict, Any
+from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-# Try importing Hedera / Hiero SDK
-HEDERA_SDK_AVAILABLE = False
-try:
-    from hiero_sdk_python import (
-        Client, AccountId, PrivateKey, TokenId,
-        TokenBurnTransaction, TransferTransaction
-    )
-    HEDERA_SDK_AVAILABLE = True
-except ImportError:
-    try:
-        from hedera import (
-            Client, AccountId, PrivateKey, TokenId,
-            TokenBurnTransaction, TransferTransaction
-        )
-        HEDERA_SDK_AVAILABLE = True
-    except ImportError:
-        HEDERA_SDK_AVAILABLE = False
+# =====================================================================
+# 1. GLOBAL NETWORK CONFIGURATION & CONSTANTS
+# =====================================================================
+TOKEN_NAME = "Nexus"
+TOKEN_TICKER = "NEX"
 
-load_dotenv()
+# Secrets pulled from Environment Variables (Fallback to local dev defaults)
+NEXUS_HMAC_SECRET = os.getenv("NEXUS_HMAC_SECRET", "dev_secret_key_change_in_production").encode('utf-8')
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_key_123")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Paste your Discord Webhook URL in Render
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
-OPERATOR_ID = os.getenv("OPERATOR_ID", "0.0.10770972")
-OPERATOR_KEY = os.getenv("OPERATOR_KEY", "")
-MIRROR_NODE = os.getenv("MIRROR_NODE_URL", "https://testnet.mirrornode.hedera.com")
-HMAC_SECRET = os.getenv("HMAC_SECRET", "super_secret_game_server_key_123")
-TOKEN_ID = os.getenv("TOKEN_ID", "0.0.10770973")
-
-# Initialize Hedera Testnet Client
-hedera_client = None
-if HEDERA_SDK_AVAILABLE and OPERATOR_ID and OPERATOR_KEY:
-    try:
-        hedera_client = Client.for_testnet()
-        op_id = AccountId.from_string(OPERATOR_ID)
-        op_key = PrivateKey.from_string(OPERATOR_KEY)
-        hedera_client.set_operator(op_id, op_key)
-        print("🟢 [HEDERA SDK] Connected to Hedera Testnet successfully.")
-    except Exception as e:
-        print(f"⚠️ [HEDERA SDK] Could not initialize live client: {e}")
+# Global In-Memory Security & System State
+BLACKHOLE_IP_POOL: set = set()
+PROCESSED_NONCES: set = set()
+IS_MINTING_PAUSED: bool = False
 
 # =====================================================================
-# 1. SQLITE DATABASE SETUP & MODELS
+# 2. DATABASE MODELS & SCHEMA DEFINITIONS
 # =====================================================================
-DATA_DIR = "/app/data" if os.path.exists("/app/data") else "."
-DATABASE_URL = f"sqlite:///{DATA_DIR}/game_economy.db"
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -67,20 +45,61 @@ class PlayerModel(Base):
     __tablename__ = "players"
 
     player_id = Column(String, primary_key=True, index=True)
+    spendable_nex = Column(Float, default=0.0)
+    total_nex_earned = Column(Float, default=0.0)
     total_hours_played = Column(Float, default=0.0)
-    spendable_coins = Column(Float, default=0.0)
     prestige_level = Column(Integer, default=0)
-    developer_balance = Column(Float, default=0.0)
+    created_at = Column(Float, default=time.time)
 
-class ItemModel(Base):
-    __tablename__ = "items"
+class ConnectedAccountModel(Base):
+    __tablename__ = "connected_accounts"
+
+    player_id = Column(String, primary_key=True, index=True)
+    platform_name = Column(String, nullable=False)        # e.g., "minecraft", "steam", "discord", "hedera_wallet"
+    external_account_id = Column(String, nullable=False, unique=True)
+    linked_at = Column(Float, default=time.time)
+
+class PlayerInventoryModel(Base):
+    __tablename__ = "player_inventory"
+
+    instance_id = Column(String, primary_key=True, index=True)
+    player_id = Column(String, index=True, nullable=False)
+    item_id = Column(String, nullable=False)
+    item_type = Column(String, default="Standard")          # "Standard", "Creator_Reward", "Event_Gift"
+    acquired_via = Column(String, default="Store_Purchase")  # "Store_Purchase", "Operator_Gift"
+    hours_logged_on_item = Column(Float, default=0.0)
+    hours_required_to_unlock = Column(Float, default=10.0)
+    is_tradeable = Column(Integer, default=0)                # 0 = Account-Locked, 1 = Tradeable
+    acquired_at = Column(Float, default=time.time)
+
+class StoreCatalogModel(Base):
+    __tablename__ = "store_catalog"
 
     item_id = Column(String, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    price_in_coins = Column(Float, nullable=False)
-    rarity = Column(String, default="Common")
-    earn_rate_multiplier = Column(Float, default=1.0)  # e.g. 1.05 = +5% earn rate
+    description = Column(String, nullable=False)
+    price_nex = Column(Float, nullable=False)
+    developer_id = Column(String, nullable=False)
+    multiplier_boost = Column(Float, default=1.0)
+    is_active = Column(Boolean, default=True)
+
+class DeveloperModel(Base):
+    __tablename__ = "developers"
+
+    developer_id = Column(String, primary_key=True, index=True)
+    developer_name = Column(String, nullable=False)
+    earned_nex_balance = Column(Float, default=0.0)
+    hedera_wallet_id = Column(String, nullable=True)
+
+class AuditLogModel(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(Float, default=time.time)
+    action_type = Column(String, nullable=False)
+    player_id = Column(String, nullable=True)
+    amount_nex = Column(Float, default=0.0)
+    details = Column(String, nullable=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -91,493 +110,405 @@ def get_db():
     finally:
         db.close()
 
+def seed_default_catalog():
+    db = SessionLocal()
+    try:
+        if not db.query(StoreCatalogModel).first():
+            items = [
+                StoreCatalogModel(
+                    item_id="item_boost_01",
+                    name="Alpha Vector Crest",
+                    description="1.05x Passive NEX Earn Boost Across All Games",
+                    price_nex=100.0,
+                    developer_id="dev_nexus_core",
+                    multiplier_boost=1.05
+                ),
+                StoreCatalogModel(
+                    item_id="item_boost_02",
+                    name="Hyperion Core Badge",
+                    description="1.15x Passive NEX Earn Boost & Crimson Name Accent",
+                    price_nex=500.0,
+                    developer_id="dev_nexus_core",
+                    multiplier_boost=1.15
+                )
+            ]
+            db.add_all(items)
+            
+            if not db.query(DeveloperModel).filter_by(developer_id="dev_nexus_core").first():
+                db.add(DeveloperModel(
+                    developer_id="dev_nexus_core",
+                    developer_name="Nexus Core Labs",
+                    earned_nex_balance=0.0,
+                    hedera_wallet_id="0.0.123456"
+                ))
+            db.commit()
+    finally:
+        db.close()
+
+seed_default_catalog()
+
 # =====================================================================
-# 2. HEDERA ON-CHAIN RELAYER UTILITIES
+# 3. FASTAPI APP INIT & HONEYCOMB BLACKHOLE MIDDLEWARE
 # =====================================================================
-def burn_tokens_on_hedera(token_id: str, amount_to_burn: float) -> str:
-    smallest_unit = int(amount_to_burn * 100_000_000)
-    if hedera_client and HEDERA_SDK_AVAILABLE:
+app = FastAPI(
+    title=f"{TOKEN_NAME} Engine | Central Bank API",
+    description=f"Operator-controlled Central Bank Architecture & Telemetry Relayer for {TOKEN_NAME} ({TOKEN_TICKER}).",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def trigger_discord_alert(details: str):
+    """Sends a real-time security alert to your phone via Discord Webhook."""
+    if DISCORD_WEBHOOK_URL:
         try:
-            tx = (
-                TokenBurnTransaction()
-                .set_token_id(TokenId.from_string(token_id))
-                .set_amount(smallest_unit)
-                .freeze_with(hedera_client)
-            )
-            response = tx.execute(hedera_client)
-            receipt = response.get_receipt(hedera_client)
-            tx_hash = str(response.transaction_id)
-            print(f"--- [HEDERA ON-CHAIN LIVE BURN] ---")
-            print(f"Token ID: {token_id} | Burned: {amount_to_burn:,} MAIN | Status: {receipt.status}")
-            return tx_hash
-        except Exception as err:
-            print(f"⚠️ Live Hedera Burn error: {err}")
+            payload = {
+                "content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"
+            }
+            requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=2.0)
+        except Exception as e:
+            print(f"Discord alert dispatch failed: {e}")
 
-    timestamp_str = str(time.time()).replace('.', '')[:10]
-    return f"{OPERATOR_ID}@{timestamp_str}.000000000"
+@app.middleware("http")
+def blackhole_bot_trap_middleware(request: Request, call_next):
+    client_ip = request.client.host or "127.0.0.1"
 
-def transfer_dev_revenue_on_hedera(token_id: str, dev_account_id: str, dev_amount: float) -> str:
-    smallest_unit = int(dev_amount * 100_000_000)
-    if hedera_client and HEDERA_SDK_AVAILABLE:
-        try:
-            tx = (
-                TransferTransaction()
-                .add_token_transfer(TokenId.from_string(token_id), AccountId.from_string(OPERATOR_ID), -smallest_unit)
-                .add_token_transfer(TokenId.from_string(token_id), AccountId.from_string(dev_account_id), smallest_unit)
-                .freeze_with(hedera_client)
-            )
-            response = tx.execute(hedera_client)
-            receipt = response.get_receipt(hedera_client)
-            tx_hash = str(response.transaction_id)
-            print(f"--- [HEDERA ON-CHAIN LIVE TRANSFER] ---")
-            print(f"Routed {dev_amount:,} MAIN to Dev Treasury: {dev_account_id} | Status: {receipt.status}")
-            return tx_hash
-        except Exception as err:
-            print(f"⚠️ Live Hedera Transfer error: {err}")
+    # Honeypot Traps: Flag malicious scanners attempting to hit fake administrative endpoints
+    if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
+        BLACKHOLE_IP_POOL.add(client_ip)
+        trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
+        return JSONResponse(
+            status_code=200, 
+            content={"status": "success", "message": "Debug state logged."}
+        )
 
-    timestamp_str = str(time.time()).replace('.', '')[:10]
-    return f"{OPERATOR_ID}@{timestamp_str}.000000001"
+    # Silent Blackhole Neutralization: Return fake success without database operations or minting
+    if client_ip in BLACKHOLE_IP_POOL:
+        return JSONResponse(
+            status_code=200, 
+            content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"}
+        )
+
+    return call_next(request)
 
 # =====================================================================
-# 3. GAME LOGIC & HELPER FUNCTIONS
+# 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
 # =====================================================================
+def int_to_roman(num: int) -> str:
+    if num <= 0:
+        return ""
+    val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+    syb = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+    roman_num = ""
+    i = 0
+    while num > 0:
+        for _ in range(num // val[i]):
+            roman_num += syb[i]
+            num -= val[i]
+        i += 1
+    return roman_num
+
 def get_or_create_player(db: Session, player_id: str) -> PlayerModel:
     player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
     if not player:
-        player = PlayerModel(player_id=player_id, total_hours_played=0.0, spendable_coins=0.0, prestige_level=0, developer_balance=0.0)
+        player = PlayerModel(player_id=player_id)
         db.add(player)
         db.commit()
         db.refresh(player)
     return player
 
-def calculate_player_earn_rate(player: PlayerModel) -> float:
-    base_rate = 100.0
-    prestige_multiplier = 1.0 + (0.05 * player.prestige_level)
-    effective_rate = base_rate * prestige_multiplier
-    if math.floor(player.total_hours_played) >= 50:
-        effective_rate *= 0.40  # 60% Soft decay
-    return effective_rate
+def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
+    prestige_colors = {
+        0: "#FFFFFF",  # Base White
+        1: "#CD7F32",  # Bronze
+        2: "#C0C0C0",  # Silver
+        3: "#FFD700",  # Gold
+    }
+    color = prestige_colors.get(player.prestige_level, "#00F0FF")  # Obsidian Cyan
 
-def verify_hmac_signature(player_id: str, minutes_played: int, timestamp: float, signature: str) -> bool:
-    payload = f"{player_id}:{minutes_played}:{timestamp}"
-    expected_sig = hmac.new(HMAC_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected_sig, signature)
+    emblem = None
+    special_item = db.query(PlayerInventoryModel).filter(
+        PlayerInventoryModel.player_id == player.player_id,
+        PlayerInventoryModel.item_type == "Creator_Reward"
+    ).first()
+
+    if special_item:
+        emblem = "🏆"
+    elif player.total_hours_played < 24.0:
+        emblem = "⚡"  # Active 24hr New Player Boost
+
+    if player.prestige_level > 0:
+        prestige_tag = f"[{TOKEN_TICKER}-{int_to_roman(player.prestige_level)}]"
+    else:
+        prestige_tag = f"[{TOKEN_TICKER}]"
+
+    formatted_display = f"{emblem + ' ' if emblem else ''}{prestige_tag} {{username}}".strip()
+
+    return {
+        "text_color": color,
+        "emblem_icon": emblem,
+        "prestige_level": player.prestige_level,
+        "prestige_roman": int_to_roman(player.prestige_level),
+        "prestige_tag": prestige_tag,
+        "display_name_formatted": formatted_display
+    }
 
 # =====================================================================
-# 4. FASTAPI APP & ENDPOINTS
+# 5. API REQUEST / RESPONSE SCHEMAS
 # =====================================================================
-app = FastAPI(
-    title="Main Coin Network Relayer & Hedera Bridge",
-    description="Unified API server for game telemetry, SQLite database, dynamic developer store, and Hedera HTS token settlement.",
-    version="2.4.0"
-)
-
-class TelemetryPing(BaseModel):
+class TelemetryPingRequest(BaseModel):
     player_id: str
     minutes_played: int
-    timestamp: float
+    timestamp: int
+    nonce: str
     signature: str
 
 class StorePurchaseRequest(BaseModel):
     player_id: str
     item_id: str
 
-class PrestigeRequest(BaseModel):
-    player_id: str
-
-class CreateItemRequest(BaseModel):
+class OperatorGiftRequest(BaseModel):
+    target_player_id: str
     item_id: str
-    name: str
-    description: Optional[str] = ""
-    price_in_coins: float
-    rarity: Optional[str] = "Common"
-    earn_rate_multiplier: Optional[float] = 1.0
+    item_type: str = "Creator_Reward"
+    reason: str = "Operator Special Gift"
 
-@app.get("/")
-def read_root():
-    return {
-        "service": "Main Coin Network Relayer & Hedera Bridge",
-        "status": "ONLINE",
-        "admin_dashboard": "http://127.0.0.1:8000/admin",
-        "hedera_sdk_connected": bool(hedera_client),
-        "operator_id": OPERATOR_ID,
-        "hts_token_id": TOKEN_ID
-    }
+# =====================================================================
+# 6. CORE API ENDPOINTS & MOBILE CONTROLS
+# =====================================================================
+@app.get("/", response_class=HTMLResponse)
+def root_dashboard(db: Session = Depends(get_db)):
+    total_players = db.query(PlayerModel).count()
+    total_nex = db.query(PlayerModel).all()
+    circulating_nex = sum(p.spendable_nex for p in total_nex)
+    status_color = "#e74c3c" if IS_MINTING_PAUSED else "#3fb950"
+    status_label = "MINTING PAUSED" if IS_MINTING_PAUSED else "ACTIVE MAINNET RELAYER"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>{TOKEN_NAME} Engine | Operator Central Bank</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0b0e14; color: #e1e7ec; margin: 0; padding: 20px; }}
+                .container {{ max-width: 900px; margin: 0 auto; }}
+                .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; margin-bottom: 20px; }}
+                h1 {{ color: #58a6ff; font-size: 24px; margin-bottom: 5px; }}
+                .ticker {{ color: #8b949e; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }}
+                .metric {{ font-size: 32px; font-weight: bold; color: #3fb950; margin: 10px 0; }}
+                .badge {{ background: {status_color}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="card">
+                    <span class="ticker">{TOKEN_NAME} ({TOKEN_TICKER}) Central Bank</span>
+                    <h1>Operator Relayer Dashboard</h1>
+                    <p>Status: <span class="badge">{status_label}</span></p>
+                </div>
+                <div class="card">
+                    <h3>Network Metrics</h3>
+                    <p>Registered Players: <strong>{total_players}</strong></p>
+                    <p>Trapped Bot IPs: <strong style="color: #f85149;">{len(BLACKHOLE_IP_POOL)}</strong></p>
+                    <p>Circulating {TOKEN_TICKER}:</p>
+                    <div class="metric">{circulating_nex:,.2f} {TOKEN_TICKER}</div>
+                </div>
+            </div>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=200)
 
-# --- STORE MANAGEMENT (DEVELOPER CONTROL) ---
-@app.get("/api/v1/store/catalog")
-def get_store_catalog(db: Session = Depends(get_db)):
-    items = db.query(ItemModel).all()
-    return {
-        "status": "success",
-        "total_items": len(items),
-        "catalog": [
-            {
-                "item_id": i.item_id,
-                "name": i.name,
-                "description": i.description,
-                "price_in_coins": i.price_in_coins,
-                "rarity": i.rarity,
-                "earn_rate_multiplier": i.earn_rate_multiplier
-            } for i in items
-        ]
-    }
-
-@app.post("/api/v1/admin/store/item")
-def create_or_update_store_item(item: CreateItemRequest, db: Session = Depends(get_db)):
-    existing = db.query(ItemModel).filter(ItemModel.item_id == item.item_id).first()
-    if existing:
-        existing.name = item.name
-        existing.description = item.description
-        existing.price_in_coins = item.price_in_coins
-        existing.rarity = item.rarity
-        existing.earn_rate_multiplier = item.earn_rate_multiplier
-        message = f"Updated item '{item.item_id}'."
-    else:
-        new_item = ItemModel(
-            item_id=item.item_id,
-            name=item.name,
-            description=item.description,
-            price_in_coins=item.price_in_coins,
-            rarity=item.rarity,
-            earn_rate_multiplier=item.earn_rate_multiplier
-        )
-        db.add(new_item)
-        message = f"Created new store item '{item.name}'."
-
-    db.commit()
-    return {"status": "success", "message": message, "item": item.model_dump()}
-
-@app.delete("/api/v1/admin/store/item/{item_id}")
-def delete_store_item(item_id: str, db: Session = Depends(get_db)):
-    item = db.query(ItemModel).filter(ItemModel.item_id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found.")
-    db.delete(item)
-    db.commit()
-    return {"status": "success", "message": f"Deleted item '{item_id}' from store catalog."}
-
-# --- STORE PURCHASE ---
-@app.post("/api/v1/store/buy")
-def buy_store_item(purchase: StorePurchaseRequest, db: Session = Depends(get_db)):
-    item = db.query(ItemModel).filter(ItemModel.item_id == purchase.item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail=f"Store item '{purchase.item_id}' does not exist.")
-
-    player = get_or_create_player(db, purchase.player_id)
-
-    if player.spendable_coins < item.price_in_coins:
-        raise HTTPException(status_code=400, detail=f"Insufficient coins. Item costs {item.price_in_coins} MAIN.")
-
-    player.spendable_coins -= item.price_in_coins
-    dev_share = item.price_in_coins * 0.75
-    platform_share = item.price_in_coins * 0.25
-    player.developer_balance += dev_share
-
-    db.commit()
-    db.refresh(player)
-
-    tx_id = transfer_dev_revenue_on_hedera(TOKEN_ID, OPERATOR_ID, dev_share)
-
-    return {
-        "status": "success",
-        "item_id": item.item_id,
-        "item_name": item.name,
-        "price_paid": item.price_in_coins,
-        "developer_credited": dev_share,
-        "platform_fee": platform_share,
-        "remaining_player_balance": round(player.spendable_coins, 2),
-        "hedera_tx_id": tx_id
-    }
-
-# --- TELEMETRY & PRESTIGE ---
 @app.post("/api/v1/telemetry")
-def process_telemetry(data: TelemetryPing, db: Session = Depends(get_db)):
-    if not verify_hmac_signature(data.player_id, data.minutes_played, data.timestamp, data.signature):
-        raise HTTPException(status_code=401, detail="Invalid HMAC telemetry signature.")
+def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host or "127.0.0.1"
+    current_time = int(time.time())
 
+    # --- KILL SWITCH CHECK ---
+    if IS_MINTING_PAUSED:
+        raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
+
+    # --- SECURITY LAYER 1: Replay Window Check ---
+    if abs(current_time - data.timestamp) > 300:
+        trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
+        raise HTTPException(status_code=401, detail="Expired telemetry payload window.")
+
+    # --- SECURITY LAYER 2: Nonce Single-Use Validation ---
+    if data.nonce in PROCESSED_NONCES:
+        BLACKHOLE_IP_POOL.add(client_ip)
+        trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`. IP Blackholed.")
+        raise HTTPException(status_code=401, detail="Replay payload detected.")
+
+    # --- SECURITY LAYER 3: Mathematical Velocity Cap ---
+    if data.minutes_played > 60 or data.minutes_played <= 0:
+        raise HTTPException(status_code=400, detail="Invalid gameplay duration telemetry.")
+
+    # --- SECURITY LAYER 4: HMAC Cryptographic Validation ---
+    payload = f"{data.player_id}:{data.minutes_played}:{data.timestamp}:{data.nonce}".encode('utf-8')
+    expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected_sig, data.signature):
+        BLACKHOLE_IP_POOL.add(client_ip)
+        trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`). IP Blackholed.")
+        raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
+
+    PROCESSED_NONCES.add(data.nonce)
+
+    # --- PROCESS EARN CALCULATIONS ---
     player = get_or_create_player(db, data.player_id)
-    hours = data.minutes_played / 60.0
-    player.total_hours_played += hours
-    current_rate = calculate_player_earn_rate(player)
-    earned = hours * current_rate
-    player.spendable_coins += earned
+    hours_added = data.minutes_played / 60.0
+    player.total_hours_played += hours_added
 
+    base_rate = 10.0
+    multiplier = 1.0
+
+    # Apply 24-Hour Active Gameplay Welcome Boost (+10%)
+    if player.total_hours_played <= 24.0:
+        multiplier += 0.10
+
+    earned_nex = (base_rate * hours_added) * multiplier
+    player.spendable_nex += earned_nex
+    player.total_nex_earned += earned_nex
+
+    # Audit Log
+    audit_entry = AuditLogModel(
+        action_type="TELEMETRY_MINT",
+        player_id=player.player_id,
+        amount_nex=earned_nex,
+        details=f"Earned {earned_nex:.2f} NEX for {data.minutes_played}m play time"
+    )
+    db.add(audit_entry)
     db.commit()
-    db.refresh(player)
 
     return {
         "status": "success",
         "player_id": player.player_id,
-        "minutes_credited": data.minutes_played,
-        "coins_earned": round(earned, 4),
-        "current_earn_rate": round(current_rate, 2),
-        "total_spendable_coins": round(player.spendable_coins, 2),
-        "current_level": math.floor(player.total_hours_played),
-        "prestige_level": player.prestige_level
+        "nex_earned": round(earned_nex, 4),
+        "total_spendable_nex": round(player.spendable_nex, 4),
+        "active_multiplier": round(multiplier, 2),
+        "nametag_style": calculate_nametag_style(player, db)
     }
 
 @app.get("/api/v1/player/{player_id}")
-def get_player_stats(player_id: str, db: Session = Depends(get_db)):
+def get_player_profile(player_id: str, db: Session = Depends(get_db)):
     player = get_or_create_player(db, player_id)
-    current_level = math.floor(player.total_hours_played)
     return {
         "player_id": player.player_id,
-        "hours_played": round(player.total_hours_played, 2),
-        "current_level": current_level,
+        "spendable_nex": round(player.spendable_nex, 4),
+        "total_nex_earned": round(player.total_nex_earned, 4),
+        "total_hours_played": round(player.total_hours_played, 2),
         "prestige_level": player.prestige_level,
-        "spendable_coins": round(player.spendable_coins, 2),
-        "current_earn_rate": round(calculate_player_earn_rate(player), 2),
-        "is_soft_decay_active": current_level >= 50
+        "nametag_style": calculate_nametag_style(player, db)
     }
 
-@app.post("/api/v1/prestige")
-def execute_prestige(req: PrestigeRequest, db: Session = Depends(get_db)):
+@app.post("/api/v1/store/buy")
+def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_db)):
     player = get_or_create_player(db, req.player_id)
-    current_level = math.floor(player.total_hours_played)
+    item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id, StoreCatalogModel.is_active == True).first()
 
-    if current_level < 50:
-        raise HTTPException(status_code=400, detail=f"Must be Level 50+. Current: {current_level}")
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found in catalog.")
 
-    prestige_fee = 2500.0
-    if player.spendable_coins < prestige_fee:
-        raise HTTPException(status_code=400, detail=f"Requires {prestige_fee} coins.")
+    if player.spendable_nex < item.price_nex:
+        raise HTTPException(status_code=400, detail=f"Insufficient {TOKEN_TICKER} balance.")
 
-    player.spendable_coins -= prestige_fee
-    burned_amount = prestige_fee * 0.25
-    player.prestige_level += 1
-    player.total_hours_played = 0.0
+    player.spendable_nex -= item.price_nex
 
+    # Execute 75/25 Developer Split
+    dev_cut = item.price_nex * 0.75
+    platform_cut = item.price_nex * 0.25
+
+    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == item.developer_id).first()
+    if developer:
+        developer.earned_nex_balance += dev_cut
+
+    instance_id = f"inst_{item.item_id}_{int(time.time())}_{player.player_id[:4]}"
+    inventory_item = PlayerInventoryModel(
+        instance_id=instance_id,
+        player_id=player.player_id,
+        item_id=item.item_id,
+        item_type="Standard",
+        acquired_via="Store_Purchase"
+    )
+    db.add(inventory_item)
+
+    audit_entry = AuditLogModel(
+        action_type="STORE_PURCHASE",
+        player_id=player.player_id,
+        amount_nex=item.price_nex,
+        details=f"Purchased '{item.name}'. Dev Cut: {dev_cut:.2f} NEX, Treasury Cut: {platform_cut:.2f} NEX"
+    )
+    db.add(audit_entry)
     db.commit()
-    db.refresh(player)
-
-    tx_id = burn_tokens_on_hedera(TOKEN_ID, burned_amount)
 
     return {
         "status": "success",
-        "message": "Prestige reset complete! Token burn submitted to Hedera.",
-        "new_prestige_level": player.prestige_level,
-        "burned_coins": burned_amount,
-        "new_earn_rate": round(calculate_player_earn_rate(player), 2),
-        "remaining_coins": round(player.spendable_coins, 2),
-        "hedera_burn_tx_id": tx_id
+        "message": f"Successfully purchased {item.name}.",
+        "instance_id": instance_id,
+        "remaining_spendable_nex": round(player.spendable_nex, 4)
+    }
+
+# --- MOBILE REMOTE CONTROLS ---
+@app.post("/api/v1/admin/toggle-pause")
+def toggle_minting_pause(x_admin_key: str = Header(...)):
+    """Remote Emergency Kill Switch: Trigger from your phone to pause/unpause NEX minting."""
+    global IS_MINTING_PAUSED
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized operator key.")
+
+    IS_MINTING_PAUSED = not IS_MINTING_PAUSED
+    status_text = "PAUSED" if IS_MINTING_PAUSED else "RESUMED"
+    trigger_discord_alert(f"Operator manually **{status_text}** central bank minting.")
+
+    return {
+        "status": "success",
+        "is_minting_paused": IS_MINTING_PAUSED,
+        "message": f"Central Bank minting has been {status_text}."
+    }
+
+@app.post("/api/v1/admin/gift-item")
+def operator_gift_item(req: OperatorGiftRequest, x_admin_key: str = Header(...), db: Session = Depends(get_db)):
+    if x_admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized operator key.")
+
+    player = get_or_create_player(db, req.target_player_id)
+    instance_id = f"gift_{req.item_id}_{int(time.time())}_{player.player_id[:4]}"
+    inventory_entry = PlayerInventoryModel(
+        instance_id=instance_id,
+        player_id=player.player_id,
+        item_id=req.item_id,
+        item_type=req.item_type,
+        acquired_via=req.reason
+    )
+    db.add(inventory_entry)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Gifted item '{req.item_id}' to player '{player.player_id}'.",
+        "instance_id": instance_id
     }
 
 @app.get("/api/v1/admin/summary")
 def get_admin_summary(db: Session = Depends(get_db)):
-    total_players = db.query(func.count(PlayerModel.player_id)).scalar() or 0
-    total_spendable_coins = db.query(func.sum(PlayerModel.spendable_coins)).scalar() or 0.0
-    total_dev_earnings = db.query(func.sum(PlayerModel.developer_balance)).scalar() or 0.0
-    total_prestige_resets = db.query(func.sum(PlayerModel.prestige_level)).scalar() or 0
-    total_hours_logged = db.query(func.sum(PlayerModel.total_hours_played)).scalar() or 0.0
-    total_burned_coins = total_prestige_resets * 625.0
-
-    leaderboard = db.query(PlayerModel).order_by(PlayerModel.prestige_level.desc(), PlayerModel.spendable_coins.desc()).limit(10).all()
-    players_list = [
-        {
-            "player_id": p.player_id,
-            "level": math.floor(p.total_hours_played),
-            "prestige_level": p.prestige_level,
-            "hours_played": round(p.total_hours_played, 1),
-            "spendable_coins": round(p.spendable_coins, 2)
-        } for p in leaderboard
-    ]
+    players = db.query(PlayerModel).all()
+    developers = db.query(DeveloperModel).all()
 
     return {
-        "system_status": "ONLINE",
-        "economy_metrics": {
-            "total_registered_players": total_players,
-            "circulating_spendable_coins": round(total_spendable_coins, 2),
-            "total_dev_revenue_credited": round(total_dev_earnings, 2),
-            "total_prestige_resets_executed": total_prestige_resets,
-            "total_hedera_tokens_burned": round(total_burned_coins, 2),
-            "total_gameplay_hours_logged": round(total_hours_logged, 2)
-        },
-        "leaderboard": players_list
+        "network_token": TOKEN_NAME,
+        "ticker": TOKEN_TICKER,
+        "is_minting_paused": IS_MINTING_PAUSED,
+        "total_registered_players": len(players),
+        "total_circulating_nex": sum(p.spendable_nex for p in players),
+        "total_lifetime_nex_minted": sum(p.total_nex_earned for p in players),
+        "total_developer_unclaimed_nex": sum(d.earned_nex_balance for d in developers),
+        "trapped_bot_ips_count": len(BLACKHOLE_IP_POOL),
+        "trapped_bot_ips": list(BLACKHOLE_IP_POOL)
     }
-
-# =====================================================================
-# 5. EMBEDDED VISUAL WEB DASHBOARD ROUTE (WITH STORE CONTROLS)
-# =====================================================================
-@app.get("/admin", response_class=HTMLResponse)
-def render_admin_dashboard():
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Main Coin Network - Admin Dashboard</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <style>
-            :root { --bg: #0f172a; --panel: #1e293b; --accent: #38bdf8; --green: #22c55e; --red: #ef4444; --text: #f8fafc; --subtext: #94a3b8; --border: #334155; }
-            body { margin: 0; font-family: system-ui, sans-serif; background-color: var(--bg); color: var(--text); padding: 24px; }
-            .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
-            .title { font-size: 24px; font-weight: bold; color: var(--accent); }
-            .badge { background: #0284c7; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-            .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-            .card-title { font-size: 12px; color: var(--subtext); text-transform: uppercase; margin-bottom: 8px; }
-            .card-value { font-size: 22px; font-weight: bold; color: var(--text); }
-            .content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
-            @media (max-width: 900px) { .content-grid { grid-template-columns: 1fr; } }
-            .panel-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-            th, td { padding: 8px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
-            th { color: var(--subtext); }
-            input, select, button { background: #0f172a; border: 1px solid var(--border); color: white; padding: 8px; border-radius: 4px; width: 100%; box-sizing: border-box; margin-bottom: 8px; }
-            button { background: #0284c7; font-weight: bold; cursor: pointer; border: none; margin-top: 8px; }
-            button:hover { background: #0369a1; }
-            .btn-danger { background: var(--red); }
-            .btn-danger:hover { background: #dc2626; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div>
-                <span class="title">MAIN COIN NETWORK</span>
-                <span style="color: var(--subtext); margin-left: 12px;">Developer Admin Dashboard</span>
-            </div>
-            <div>
-                <span class="badge" style="background:var(--green);">CONNECTED TO HEDERA</span>
-            </div>
-        </div>
-
-        <div class="grid">
-            <div class="card"><div class="card-title">Registered Players</div><div class="card-value" id="kpi-players">0</div></div>
-            <div class="card"><div class="card-title">Circulating Supply</div><div class="card-value" id="kpi-circulating">0 MAIN</div></div>
-            <div class="card"><div class="card-title">Developer Revenue (75%)</div><div class="card-value" style="color:var(--green);" id="kpi-dev">0 MAIN</div></div>
-            <div class="card"><div class="card-title">Total Burned (25%)</div><div class="card-value" style="color:var(--red);" id="kpi-burned">0 MAIN</div></div>
-        </div>
-
-        <div class="content-grid">
-            <div class="panel-box">
-                <div class="card-title">Developer Store Control (Add / Edit Item)</div>
-                <form id="item-form" onsubmit="saveItem(event)">
-                    <input type="text" id="item_id" placeholder="Item ID (e.g. dragon_shield)" required />
-                    <input type="text" id="item_name" placeholder="Item Name (e.g. Dragon Shield)" required />
-                    <input type="text" id="item_desc" placeholder="Description" />
-                    <input type="number" id="item_price" placeholder="Price in MAIN (e.g. 1500)" step="0.1" required />
-                    <select id="item_rarity">
-                        <option value="Common">Common</option>
-                        <option value="Rare">Rare</option>
-                        <option value="Epic">Epic</option>
-                        <option value="Legendary">Legendary</option>
-                    </select>
-                    <input type="number" id="item_multiplier" placeholder="Earn Rate Multiplier (e.g. 1.05 = +5%)" step="0.01" value="1.0" />
-                    <button type="submit">Save Store Item</button>
-                </form>
-            </div>
-
-            <div class="panel-box">
-                <div class="card-title">Active Store Catalog</div>
-                <table>
-                    <thead>
-                        <tr><th>ID</th><th>Name</th><th>Price</th><th>Rarity</th><th>Action</th></tr>
-                    </thead>
-                    <tbody id="catalog-body"></tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="panel-box">
-            <div class="card-title">Top Players Leaderboard</div>
-            <table>
-                <thead>
-                    <tr><th>Player ID</th><th>Level</th><th>Prestige</th><th>Hours</th><th>Balance</th></tr>
-                </thead>
-                <tbody id="leaderboard-body"></tbody>
-            </table>
-        </div>
-
-        <script>
-            async function refreshDashboard() {
-                try {
-                    const res = await fetch('/api/v1/admin/summary');
-                    const data = await res.json();
-                    const m = data.economy_metrics;
-
-                    document.getElementById('kpi-players').innerText = m.total_registered_players;
-                    document.getElementById('kpi-circulating').innerText = m.circulating_spendable_coins.toLocaleString() + ' MAIN';
-                    document.getElementById('kpi-dev').innerText = m.total_dev_revenue_credited.toLocaleString() + ' MAIN';
-                    document.getElementById('kpi-burned').innerText = m.total_hedera_tokens_burned.toLocaleString() + ' MAIN';
-
-                    const tbody = document.getElementById('leaderboard-body');
-                    tbody.innerHTML = '';
-                    data.leaderboard.forEach(p => {
-                        tbody.innerHTML += `<tr>
-                            <td style="font-weight:600;">${p.player_id}</td>
-                            <td>${p.level}</td>
-                            <td style="color:var(--accent); font-weight:bold;">${p.prestige_level}</td>
-                            <td>${p.hours_played} hrs</td>
-                            <td>${p.spendable_coins.toLocaleString()} MAIN</td>
-                        </tr>`;
-                    });
-
-                    refreshCatalog();
-                } catch (e) { console.error("Dashboard update failed:", e); }
-            }
-
-            async function refreshCatalog() {
-                const res = await fetch('/api/v1/store/catalog');
-                const data = await res.json();
-                const tbody = document.getElementById('catalog-body');
-                tbody.innerHTML = '';
-                data.catalog.forEach(item => {
-                    tbody.innerHTML += `<tr>
-                        <td><b>${item.item_id}</b></td>
-                        <td>${item.name}</td>
-                        <td>${item.price_in_coins} MAIN</td>
-                        <td>${item.rarity}</td>
-                        <td><button class="btn-danger" onclick="deleteItem('${item.item_id}')">Delete</button></td>
-                    </tr>`;
-                });
-            }
-
-            async function saveItem(e) {
-                e.preventDefault();
-                const payload = {
-                    item_id: document.getElementById('item_id').value,
-                    name: document.getElementById('item_name').value,
-                    description: document.getElementById('item_desc').value,
-                    price_in_coins: parseFloat(document.getElementById('item_price').value),
-                    rarity: document.getElementById('item_rarity').value,
-                    earn_rate_multiplier: parseFloat(document.getElementById('item_multiplier').value)
-                };
-                await fetch('/api/v1/admin/store/item', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                document.getElementById('item-form').reset();
-                refreshCatalog();
-            }
-
-            async function deleteItem(itemId) {
-                if(confirm('Delete store item ' + itemId + '?')) {
-                    await fetch('/api/v1/admin/store/item/' + itemId, { method: 'DELETE' });
-                    refreshCatalog();
-                }
-            }
-
-            refreshDashboard();
-            setInterval(refreshDashboard, 5000);
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        print("\n=== RUNNING CLI TEST SUITE ===")
-        base_url = "http://127.0.0.1:8000"
-        
-        # 1. Create Developer Item
-        requests.post(f"{base_url}/api/v1/admin/store/item", json={
-            "item_id": "laser_sword", "name": "Laser Sword", "description": "High energy blade", "price_in_coins": 500.0, "rarity": "Rare", "earn_rate_multiplier": 1.05
-        })
-        print("Developer item 'laser_sword' created.")
-
-        # 2. Query Catalog
-        cat = requests.get(f"{base_url}/api/v1/store/catalog").json()
-        print(f"Catalog Total Items: {cat['total_items']}")
