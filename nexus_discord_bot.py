@@ -3,9 +3,11 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import requests
+from dotenv import load_dotenv
 
-# 🚨 PASTE YOUR BRAND-NEW RESET TOKEN HERE
-DISCORD_TOKEN = os.getenv("MTU1NjU3NzYwNTcwNzM2NjQ0MA.GQtkvu.S-s6wr1w-7x1Wjc73a3mLMvkFr8xD42XmHejCM")
+#Load local environment variables from .env file
+load_dotenv()
+DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
 
 intents = discord.Intents.default()
@@ -70,3 +72,5 @@ if __name__ == "__main__":
         bot.run(DISCORD_TOKEN)
     else:
         print("⚠️ Please replace 'PASTE_NEW_RESET_TOKEN_HERE' with your newly reset bot token before running!")
+
+bot.run(DISCORD_TOKEN)

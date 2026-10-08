@@ -4,7 +4,7 @@ from discord.ext import commands, tasks
 import requests
 
 # Security Bot Credentials & Channel Routing
-DISCORD_TOKEN = os.getenv("MTU1NjU3NzYwNTcwNzM2NjQ0MA.GQtkvu.S-s6wr1w-7x1Wjc73a3mLMvkFr8xD42XmHejCM")  # Use your bot token
+DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Use your bot token
 BACKEND_URL = "https://main-coin-backend.onrender.com"
 ADMIN_CHANNEL_ID = 1557639936386277488  # Replace with your copied 18-digit #admin-alerts Channel ID
 
