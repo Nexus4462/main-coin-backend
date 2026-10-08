@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: main-coin-api
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPERATOR_ID
+        sync: false
+      - key: OPERATOR_KEY
+        sync: false
+      - key: MIRROR_NODE_URL
+        value: https://testnet.mirrornode.hedera.com
+      - key: HMAC_SECRET
+        sync: false
+      - key: TOKEN_ID
+        sync: false
+    disk:
+      name: sqlite-data
+      mountPath: /app/data
+      sizeGB: 1

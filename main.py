@@ -1,8 +1,11 @@
+import Body
 import os
 import time
 import hmac
 import hashlib
 import requests
+import random
+import string
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -10,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from datetime import datetime, timedelta
 
 # =====================================================================
 # 1. GLOBAL NETWORK CONFIGURATION & CONSTANTS
@@ -27,6 +31,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 BLACKHOLE_IP_POOL: set = set()
 PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
+
+LINK_CODES: Dict[str, Any] = {}
 
 # =====================================================================
 # 2. DATABASE MODELS & SCHEMA DEFINITIONS
@@ -196,6 +202,57 @@ def blackhole_bot_trap_middleware(request: Request, call_next):
         )
 
     return call_next(request)
+
+# =====================================================================
+# ACCOUNT LINKING & DISCORD IDENTITY ENDPOINTS
+# =====================================================================
+
+@app.post("/api/v1/link/generate")
+async def generate_link_code(player_id: str = Body(..., embed=True)):
+    """Generates a temporary 10-minute linking code (NX-XXXX)."""
+    code_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    link_code = f"NX-{code_suffix}"
+    
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    LINK_CODES[link_code] = {"player_id": player_id, "expires": expires_at}
+    
+    return {
+        "status": "success",
+        "link_code": link_code,
+        "expires_in_seconds": 600,
+        "instructions": "Type `/link code:NX-XXXX` in Discord to bind your profile."
+    }
+
+@app.post("/api/v1/link/verify")
+async def verify_link_code(payload: dict = Body(...)):
+    """Verifies the link code submitted by nexus_discord_bot.py."""
+    link_code = payload.get("link_code", "").strip().upper()
+    discord_id = payload.get("discord_id")
+    discord_tag = payload.get("discord_tag")
+    
+    record = LINK_CODES.get(link_code)
+    
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid or expired link code.")
+    
+    if datetime.utcnow() > record["expires"]:
+        del LINK_CODES[link_code]
+        raise HTTPException(status_code=400, detail="Link code has expired. Generate a new one in-game.")
+    
+    player_id = record["player_id"]
+    
+    # Remove code after successful use
+    del LINK_CODES[link_code]
+    
+    return {
+        "status": "success",
+        "player_id": player_id,
+        "discord_id": discord_id,
+        "discord_tag": discord_tag,
+        "level": 1,
+        "prestige": 0,
+        "message": f"Successfully linked {discord_tag} to player {player_id}!"
+    }
 
 # =====================================================================
 # 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
