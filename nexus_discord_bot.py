@@ -5,7 +5,7 @@ from discord import app_commands
 import requests
 
 # 🚨 PASTE YOUR BRAND-NEW RESET TOKEN HERE
-DISCORD_TOKEN = "MTU1NjU3NzYwNTcwNzM2NjQ0MA.GQtkvu.S-s6wr1w-7x1Wjc73a3mLMvkFr8xD42XmHejCM"
+DISCORD_TOKEN = os.getenv("MTU1NjU3NzYwNTcwNzM2NjQ0MA.GQtkvu.S-s6wr1w-7x1Wjc73a3mLMvkFr8xD42XmHejCM")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
 
 intents = discord.Intents.default()

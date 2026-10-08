@@ -22,7 +22,7 @@ TOKEN_NAME = "Nexus"
 TOKEN_TICKER = "NEX"
 
 # Secrets pulled from Environment Variables (Fallback to local dev defaults)
-NEXUS_HMAC_SECRET = os.getenv("NEXUS_HMAC_SECRET", "dev_secret_key_change_in_production").encode('utf-8')
+NEXUS_HMAC_SECRET = os.getenv("HMAC_SECRET", os.getenv("NEXUS_HMAC_SECRET", "dev_secret_key_change_in_production")).encode('utf-8')
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_key_123")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Paste your Discord Webhook URL in Render
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
