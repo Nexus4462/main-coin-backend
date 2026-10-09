@@ -5,7 +5,7 @@ from discord import app_commands
 import requests
 from dotenv import load_dotenv
 
-#Load local environment variables from .env file
+# Load local environment variables from .env file
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
@@ -14,20 +14,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(f"❌ Failed to sync slash commands: {e}")
-
 # --- PRIVACY COMMAND: Check NEX Balance & Profile ---
 @bot.tree.command(name="balance", description="Check your Nexus spendable NEX balance and player profile")
 @app_commands.describe(player_id="Your Nexus Player ID (e.g., salina_pilot_01)")
 async def check_balance(interaction: discord.Interaction, player_id: str):
-    # ephemeral=True guarantees the response is completely private to the user
     await interaction.response.defer(ephemeral=True)
     
     try:
@@ -42,7 +32,6 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
             embed.add_field(name="Total Earned", value=f"{data.get('total_nex_earned', 0):,} NEX", inline=True)
             embed.add_field(name="Hours Played", value=f"{data.get('total_hours_played', 0)} hrs", inline=True)
             
-            # Safe access for nested style dictionary
             prestige = data.get('nametag_style', {}).get('prestige_tag', 'Standard')
             embed.add_field(name="Prestige Rank", value=f"{prestige}", inline=False)
             embed.set_footer(text="Nexus Central Bank Network • Render Mainnet • Read-Only Encrypted")
@@ -51,7 +40,7 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
         else:
             await interaction.followup.send(f"❌ Could not fetch profile for `{player_id}`. Status: {res.status_code}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)        
 
 # --- PRIVACY COMMAND: Claim Monthly Reward ---
 @bot.tree.command(name="claim-monthly", description="Claim monthly loyalty NEX reward token allowance")
@@ -67,10 +56,52 @@ async def claim_monthly(interaction: discord.Interaction, player_id: str):
     except Exception as e:
         await interaction.followup.send(f"⚠️ Error processing claim: {e}", ephemeral=True)
 
+# --- PRIVACY COMMAND: Link Account ---
+@bot.tree.command(name="link", description="Link your game account using a generated code")
+@app_commands.describe(code="The link code generated from the backend portal")
+async def link(interaction: discord.Interaction, code: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/api/v1/link/verify",
+            json={
+                "discord_id": str(interaction.user.id),
+                "discord_tag": str(interaction.user),
+                "link_code": code
+            },
+            timeout=30.0
+        )
+        data = response.json()
+        
+        if response.status_code == 200 and data.get("status") == "success":
+            player_id = data.get("player_id", "Unknown")
+            await interaction.followup.send(
+                f"✅ **Account Linked Successfully!**\n"
+                f"• **Player ID:** `{player_id}`\n"
+                f"• **Discord User:** {interaction.user.mention}\n"
+                f"• **Rank:** `NODE`",
+                ephemeral=True
+            )
+        else:
+            detail = data.get("detail", "Invalid or expired link code.")
+            await interaction.followup.send(f"❌ **Link Failed:** {detail}", ephemeral=True)
+            
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Connection Error:** {str(e)}", ephemeral=True)
+
+@bot.event
+async def on_ready():
+    print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} slash commands.")
+    except Exception as e:
+        print(f"❌ Failed to sync slash commands: {e}")
+
 if __name__ == "__main__":
-    if DISCORD_TOKEN and DISCORD_TOKEN != "PASTE_NEW_RESET_TOKEN_HERE":
+    if DISCORD_TOKEN:
         bot.run(DISCORD_TOKEN)
     else:
-        print("⚠️ Please replace 'PASTE_NEW_RESET_TOKEN_HERE' with your newly reset bot token before running!")
+        print("⚠️ DISCORD_BOT_TOKEN is missing from environment variables!")
 
-bot.run(DISCORD_TOKEN)
