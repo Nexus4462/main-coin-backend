@@ -195,7 +195,7 @@ def trigger_discord_alert(details: str):
         print(f"❌ Discord alert dispatch failed: {e}")
 
 @app.middleware("http")
-def blackhole_bot_trap_middleware(request: Request, call_next):
+async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
     # Honeypot Traps: Flag malicious scanners attempting to hit fake administrative endpoints
@@ -214,7 +214,8 @@ def blackhole_bot_trap_middleware(request: Request, call_next):
             content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"}
         )
 
-    return call_next(request)
+    response = await call_next(request)
+    return response
 
 # =====================================================================
 # 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
