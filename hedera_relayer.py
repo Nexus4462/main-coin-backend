@@ -1,50 +1,56 @@
 import os
-import requests
-from dotenv import load_dotenv
+from hiero_sdk_python import (
+    Client,
+    AccountId,
+    PrivateKey,
+    TokenCreateTransaction,
+    TokenType,
+    SupplyType,
+)
 
-# Load environment variables from .env
-load_dotenv()
+OPERATOR_ID_STR = os.getenv("HEDERA_OPERATOR_ID")
+OPERATOR_KEY_STR = os.getenv("HEDERA_OPERATOR_KEY")
 
-OPERATOR_ID = os.getenv("OPERATOR_ID")
-OPERATOR_KEY = os.getenv("OPERATOR_KEY")
-MIRROR_NODE = os.getenv("MIRROR_NODE_URL", "https://testnet.mirrornode.hedera.com")
+if not OPERATOR_ID_STR or not OPERATOR_KEY_STR:
+    print("❌ ERROR: HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY must be set.")
+    exit(1)
 
-def verify_testnet_account():
-    """Queries the Hedera Mirror Node to confirm live account status and HBAR balance."""
-    print(f"--- Connecting to Hedera Testnet for Account {OPERATOR_ID} ---")
+OPERATOR_ID = AccountId.from_string(OPERATOR_ID_STR)
+OPERATOR_KEY = PrivateKey.from_string(OPERATOR_KEY_STR)
+
+client = Client.for_testnet()
+client.set_operator(OPERATOR_ID, OPERATOR_KEY)
+
+def create_nex_token():
+    print(f"🚀 Deploying NEX Token to Hedera Testnet from Account: {OPERATOR_ID}...")
     
-    url = f"{MIRROR_NODE}/api/v1/accounts/{OPERATOR_ID}"
-    response = requests.get(url)
-    
-    if response.status_code == 200:
-        data = response.json()
-        hbar_balance = data.get("balance", {}).get("balance", 0) / 100_000_000
-        print(f"SUCCESS: Account Verified on Live Testnet!")
-        print(f"Account ID: {OPERATOR_ID}")
-        print(f"Testnet HBAR Balance: {hbar_balance:,} HBAR")
-        return True
-    else:
-        print(f"ERROR: Could not verify account on Hedera Testnet. Status Code: {response.status_code}")
-        return False
+    pub_key = OPERATOR_KEY.public_key()
 
-def create_main_coin_token():
-    """Simulates live Token Creation request parameters against Testnet consensus."""
-    print("\n--- Minting Main Coin Supply (100 Billion) ---")
-    payload = {
-        "name": "Main Coin",
-        "symbol": "MAIN",
-        "decimals": 8,
-        "initial_supply": 100_000_000_000_000_000, # 100 Billion with 8 decimals
-        "treasury_account_id": OPERATOR_ID,
-        "admin_key": OPERATOR_KEY,
-        "supply_key": OPERATOR_KEY
-    }
+    transaction = (
+        TokenCreateTransaction()
+        .set_token_name("NEX Token")
+        .set_token_symbol("NEX")
+        .set_decimals(4)
+        .set_initial_supply(0)
+        .set_treasury_account_id(OPERATOR_ID)
+        .set_admin_key(pub_key)
+        .set_supply_key(pub_key)
+        .set_token_type(TokenType.FUNGIBLE_COMMON)
+        .set_supply_type(SupplyType.FINITE)
+        .set_max_supply(100_000_000_000 * 10000)  # 100B fixed cap with 4 decimals
+        .freeze_with(client)
+    )
+
+    signed_tx = transaction.sign(OPERATOR_KEY)
+    receipt = signed_tx.execute(client)
     
-    print(f"Payload created for Treasury: {OPERATOR_ID}")
-    print("Token Name: Main Coin (MAIN)")
-    print("Total Supply: 100,000,000,000.00000000")
-    print("Status: SUCCESS (Token anchored to Operator Treasury)")
+    # Convert TokenId object directly to string
+    token_id = str(receipt.token_id)
+    
+    print(f"\n✅ NEX Token Created on Hedera Testnet!")
+    print(f"   Token ID: {token_id}")
+    print(f"   View on Explorer: https://hashscan.io/testnet/token/{token_id}")
+    return token_id
 
 if __name__ == "__main__":
-    if verify_testnet_account():
-        create_main_coin_token()
+    create_nex_token()
