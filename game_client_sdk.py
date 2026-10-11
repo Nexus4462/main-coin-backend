@@ -1,98 +1,74 @@
-import hashlib
-import hmac
+import os
 import time
+import hmac
+import hashlib
+import uuid
 import requests
-from typing import Dict, Any, Optional
 
-class MainCoinGameSDK:
-    def __init__(self, base_url: str = "http://127.0.0.1:8000", hmac_secret: str = "super_secret_game_server_key_123"):
-        self.base_url = base_url.rstrip("/")
-        self.hmac_secret = hmac_secret
+BACKEND_URL = os.getenv("BACKEND_URL", "https://main-coin-backend.onrender.com")
+SECRET_KEY = os.getenv("HMAC_SECRET", "super_secret_game_server_key_123").encode('utf-8')
 
-    def _generate_signature(self, player_id: str, minutes_played: int, timestamp: float) -> str:
-        """Generates client-side HMAC-SHA256 signature for telemetry payloads."""
-        payload = f"{player_id}:{minutes_played}:{timestamp}"
-        return hmac.new(self.hmac_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+def send_telemetry(player_id: str, minutes_played: int):
+    endpoint = f"{BACKEND_URL}/api/v1/telemetry"
+    timestamp = int(time.time())
+    nonce = uuid.uuid4().hex
 
-    def ping_telemetry(self, player_id: str, minutes_played: int) -> Dict[str, Any]:
-        """Sends authenticated gameplay session minutes to the backend server."""
-        timestamp = time.time()
-        signature = self._generate_signature(player_id, minutes_played, timestamp)
+    message = f"{player_id}:{minutes_played}:{timestamp}:{nonce}"
+    signature = hmac.new(SECRET_KEY, message.encode('utf-8'), hashlib.sha256).hexdigest()
 
-        payload = {
-            "player_id": player_id,
-            "minutes_played": minutes_played,
-            "timestamp": timestamp,
-            "signature": signature
-        }
+    payload = {
+        "player_id": player_id,
+        "minutes_played": minutes_played,
+        "timestamp": timestamp,
+        "nonce": nonce,
+        "signature": signature
+    }
 
-        try:
-            response = requests.post(f"{self.base_url}/api/v1/telemetry", json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            return {"status": "error", "message": str(e)}
+    res = requests.post(endpoint, json=payload)
+    if res.status_code == 200:
+        data = res.json()
+        
+        # Pull correct key names from backend schema
+        credited = data.get('nex_minted') or data.get('earned_nex') or data.get('nex_earned', 0)
+        total = data.get('total_spendable_nex') or data.get('spendable_nex', 0)
+        
+        return credited, total
+    else:
+        print(f"❌ Telemetry Error [{res.status_code}]: {res.text}")
+        return 0, 0
 
-    def get_player_data(self, player_id: str) -> Dict[str, Any]:
-        """Retrieves real-time player economy profile, decay alerts, and earn rate."""
-        try:
-            response = requests.get(f"{self.base_url}/api/v1/player/{player_id}")
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            return {"status": "error", "message": str(e)}
+def fetch_player_hud(player_id: str):
+    endpoint = f"{BACKEND_URL}/api/v1/player/{player_id}"
+    res = requests.get(endpoint)
+    if res.status_code == 200:
+        data = res.json()
+        
+        # Profile fields from backend GET endpoint
+        p_id = data.get('player_id', player_id)
+        level = data.get('level', 1)
+        rate = data.get('earn_rate_per_hr', 10.0)
+        decay = data.get('soft_decay_active', False)
+        
+        return p_id, level, rate, decay
+    else:
+        # Fallback print if direct profile route isn't queried
+        return player_id, 1, 10.0, False
 
-    def buy_store_item(self, player_id: str, item_id: str, price_in_coins: float) -> Dict[str, Any]:
-        """Executes cosmetic purchase with 75/25 Dev Split & Hedera settlement."""
-        payload = {
-            "player_id": player_id,
-            "item_id": item_id,
-            "price_in_coins": price_in_coins
-        }
-
-        try:
-            response = requests.post(f"{self.base_url}/api/v1/store/buy", json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            return {"status": "error", "message": str(e)}
-
-    def trigger_prestige(self, player_id: str) -> Dict[str, Any]:
-        """Executes Level 50 Prestige reset, charges 2,500 coins, and triggers Hedera burn."""
-        payload = {"player_id": player_id}
-
-        try:
-            response = requests.post(f"{self.base_url}/api/v1/prestige", json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            return {"status": "error", "message": str(e)}
-
-
-# --- SIMULATED GAME LOOP EXAMPLE ---
 if __name__ == "__main__":
-    print("==================================================")
-    print("      INITIALIZING GAME CLIENT SDK SESSION        ")
-    print("==================================================\n")
+    player = "salina_pilot_01"
+    
+    print("📡 Sending SDK Telemetry Heartbeats...")
+    cred1, tot1 = send_telemetry(player, 15)
+    print(f"Ping 1 Result: Credited {cred1} NEX | Total: {tot1} NEX")
 
-    # Initialize Client SDK
-    sdk = MainCoinGameSDK()
-    player_id = "gamer_tactical_99"
+    cred2, tot2 = send_telemetry(player, 15)
+    print(f"Ping 2 Result: Credited {cred2} NEX | Total: {tot2} NEX")
 
-    # 1. Simulate gameplay session (pings every 30 game minutes)
-    print("1. [GAME LOOP] Sending telemetry pings from active session...")
-    ping_1 = sdk.ping_telemetry(player_id, 30)
-    print(f"Ping 1 Result: Credited {ping_1.get('coins_earned')} coins | Total: {ping_1.get('total_spendable_coins')} coins")
+    print("\n2. [UI HUB] Fetching player stats for HUD overlay...")
+    p_id, lvl, rate, decay = fetch_player_hud(player)
+    print(f"Player: {p_id} | Level: {lvl} | Earn Rate: {rate} NEX/hr")
+    print(f"Soft Decay Active: {decay}")
 
-    ping_2 = sdk.ping_telemetry(player_id, 30)
-    print(f"Ping 2 Result: Credited {ping_2.get('coins_earned')} coins | Total: {ping_2.get('total_spendable_coins')} coins\n")
-
-    # 2. Query player profile for UI rendering
-    print("2. [UI HUB] Fetching player stats for HUD overlay...")
-    profile = sdk.get_player_data(player_id)
-    print(f"Player: {profile.get('player_id')} | Level: {profile.get('current_level')} | Earn Rate: {profile.get('current_earn_rate')} coins/hr")
-    print(f"Soft Decay Active: {profile.get('is_soft_decay_active')}\n")
-
-    print("==================================================")
-    print("         CLIENT SDK FUNCTIONAL & READY!          ")
-    print("==================================================")
+    print("\n==============================================")
+    print("        CLIENT SDK FUNCTIONAL & READY!")
+    print("==============================================")
