@@ -4,3 +4,6 @@ sqlalchemy
 psycopg[binary]
 requests
 pydantic
+httpx
+discord.py
+python-dotenv
