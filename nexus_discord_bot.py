@@ -1,4 +1,6 @@
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -9,6 +11,20 @@ from dotenv import load_dotenv
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
+
+# --- HEALTH CHECK SERVER FOR RENDER PORT BINDING ---
+class HealthCheckerHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Nexus Discord Bot is running.")
+
+def run_health_check_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckerHandler)
+    server.serve_forever()
+
+# ----------------------------------------------------
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -109,7 +125,8 @@ async def on_ready():
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
+        # Start HTTP server on background thread for Render health check
+        threading.Thread(target=run_health_check_server, daemon=True).start()
         bot.run(DISCORD_TOKEN)
     else:
         print("⚠️ DISCORD_BOT_TOKEN is missing from environment variables!")
-
