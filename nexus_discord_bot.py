@@ -2,7 +2,7 @@ import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-import requests
+import httpx
 from dotenv import load_dotenv
 
 # Load local environment variables from .env file
@@ -21,24 +21,32 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
     await interaction.response.defer(ephemeral=True)
     
     try:
-        res = requests.get(f"{BACKEND_URL}/api/v1/player/{player_id}", timeout=20.0)
-        if res.status_code == 200:
-            data = res.json()
-            embed = discord.Embed(
-                title=f"🔒 Private Vault: {player_id}",
-                color=0x00F0FF
-            )
-            embed.add_field(name="Spendable NEX", value=f"**{data.get('spendable_nex', 0):,} NEX**", inline=True)
-            embed.add_field(name="Total Earned", value=f"{data.get('total_nex_earned', 0):,} NEX", inline=True)
-            embed.add_field(name="Hours Played", value=f"{data.get('total_hours_played', 0)} hrs", inline=True)
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.get(f"{BACKEND_URL}/api/v1/player/{player_id}")
             
-            prestige = data.get('nametag_style', {}).get('prestige_tag', 'Standard')
-            embed.add_field(name="Prestige Rank", value=f"{prestige}", inline=False)
-            embed.set_footer(text="Nexus Central Bank Network • Render Mainnet • Read-Only Encrypted")
-            
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ Could not fetch profile for `{player_id}`. Status: {res.status_code}", ephemeral=True)
+            if res.status_code == 200:
+                data = res.json()
+                
+                # --- EMBLEM & NAMETAG INTEGRATION ---
+                nametag_data = data.get("nametag_style", {})
+                emblem = nametag_data.get("emblem_icon")
+                emblem_prefix = f"{emblem} " if emblem else ""
+                
+                embed = discord.Embed(
+                    title=f"🔒 {emblem_prefix}Private Vault: {player_id}",
+                    color=0x00F0FF
+                )
+                embed.add_field(name="Spendable NEX", value=f"**{data.get('spendable_nex', 0):,} NEX**", inline=True)
+                embed.add_field(name="Total Earned", value=f"{data.get('total_nex_earned', 0):,} NEX", inline=True)
+                embed.add_field(name="Hours Played", value=f"{data.get('total_hours_played', 0)} hrs", inline=True)
+                
+                prestige = nametag_data.get('prestige_tag', '[NEX]')
+                embed.add_field(name="Prestige Rank", value=f"{prestige}", inline=False)
+                embed.set_footer(text="Nexus Central Bank Network • Render Mainnet • Read-Only Encrypted")
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Could not fetch profile for `{player_id}`. Status: {res.status_code}", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)        
 
@@ -63,30 +71,30 @@ async def link(interaction: discord.Interaction, code: str):
     await interaction.response.defer(ephemeral=True)
     
     try:
-        response = requests.post(
-            f"{BACKEND_URL}/api/v1/link/verify",
-            json={
-                "discord_id": str(interaction.user.id),
-                "discord_tag": str(interaction.user),
-                "link_code": code
-            },
-            timeout=30.0
-        )
-        data = response.json()
-        
-        if response.status_code == 200 and data.get("status") == "success":
-            player_id = data.get("player_id", "Unknown")
-            await interaction.followup.send(
-                f"✅ **Account Linked Successfully!**\n"
-                f"• **Player ID:** `{player_id}`\n"
-                f"• **Discord User:** {interaction.user.mention}\n"
-                f"• **Rank:** `NODE`",
-                ephemeral=True
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{BACKEND_URL}/api/v1/link/verify",
+                json={
+                    "discord_id": str(interaction.user.id),
+                    "discord_tag": str(interaction.user),
+                    "link_code": code
+                }
             )
-        else:
-            detail = data.get("detail", "Invalid or expired link code.")
-            await interaction.followup.send(f"❌ **Link Failed:** {detail}", ephemeral=True)
+            data = response.json()
             
+            if response.status_code == 200 and data.get("status") == "success":
+                player_id = data.get("player_id", "Unknown")
+                await interaction.followup.send(
+                    f"✅ **Account Linked Successfully!**\n"
+                    f"• **Player ID:** `{player_id}`\n"
+                    f"• **Discord User:** {interaction.user.mention}\n"
+                    f"• **Rank:** `NODE`",
+                    ephemeral=True
+                )
+            else:
+                detail = data.get("detail", "Invalid or expired link code.")
+                await interaction.followup.send(f"❌ **Link Failed:** {detail}", ephemeral=True)
+                
     except Exception as e:
         await interaction.followup.send(f"❌ **Connection Error:** {str(e)}", ephemeral=True)
 
