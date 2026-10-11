@@ -19,6 +19,11 @@ class HealthCheckerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Nexus Discord Bot is running.")
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
 def run_health_check_server():
     port = int(os.getenv("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckerHandler)
