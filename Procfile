@@ -1,0 +1,1 @@
+worker: python nexus_discord_bot.py
