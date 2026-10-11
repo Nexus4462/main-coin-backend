@@ -180,14 +180,19 @@ app.add_middleware(
 
 def trigger_discord_alert(details: str):
     """Sends a real-time security alert to your phone via Discord Webhook."""
-    if DISCORD_WEBHOOK_URL:
-        try:
-            payload = {
-                "content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"
-            }
-            requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=2.0)
-        except Exception as e:
-            print(f"Discord alert dispatch failed: {e}")
+    if not DISCORD_WEBHOOK_URL:
+        print(f"⚠️ [SECURITY ALERT - NO WEBHOOK CONFIGURED]: {details}")
+        return
+
+    try:
+        payload = {
+            "content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"
+        }
+        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5.0)
+        response.raise_for_status()
+        print(f"✅ Discord security alert dispatched successfully: {details}")
+    except Exception as e:
+        print(f"❌ Discord alert dispatch failed: {e}")
 
 @app.middleware("http")
 def blackhole_bot_trap_middleware(request: Request, call_next):
