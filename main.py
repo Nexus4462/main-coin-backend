@@ -21,9 +21,18 @@ TOKEN_NAME = "Nexus"
 TOKEN_TICKER = "NEX"
 
 # Secrets pulled from Environment Variables (Fallback to local dev defaults)
-NEXUS_HMAC_SECRET = os.getenv("HMAC_SECRET", os.getenv("NEXUS_HMAC_SECRET", "dev_secret_key_change_in_production")).encode('utf-8')
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_key_123")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Paste your Discord Webhook URL in Render
+# Secrets pulled from Environment Variables (Strict Production Security)
+_raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET")
+if not _raw_hmac_secret:
+    raise ValueError("CRITICAL SECURITY ERROR: 'HMAC_SECRET' environment variable is missing on the server!")
+
+NEXUS_HMAC_SECRET = _raw_hmac_secret.encode('utf-8')
+
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
+if not ADMIN_SECRET_KEY:
+    raise ValueError("CRITICAL SECURITY ERROR: 'ADMIN_SECRET_KEY' environment variable is missing on the server!")
+
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Configured in Render Environment Variables
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
 # Global In-Memory Security & System State
