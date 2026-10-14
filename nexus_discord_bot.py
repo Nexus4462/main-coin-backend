@@ -119,6 +119,31 @@ async def link(interaction: discord.Interaction, code: str):
     except Exception as e:
         await interaction.followup.send(f"❌ **Connection Error:** {str(e)}", ephemeral=True)
 
+# Place alongside existing slash commands in bot.py
+@bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")
+@app_commands.describe(account_id="Your Hedera Account ID (e.g. 0.0.10770972)")
+async def link_wallet(interaction: discord.Interaction, account_id: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    player_id = "salina_pilot_01"  # Matches active profile in nexus-db
+
+    async with httpx.AsyncClient() as client:
+        res = await client.post(
+            f"{BACKEND_URL}/api/wallet/link",
+            json={"player_id": player_id, "hedera_account_id": account_id}
+        )
+
+    if res.status_code == 200:
+        await interaction.followup.send(
+            f"🔗 **Wallet Linked Successfully!**\n"
+            f"Player: `{player_id}`\n"
+            f"Hedera Account: `{account_id}`\n\n"
+            f"Make sure account `{account_id}` has associated Token `0.0.10991235` in HashPack or Kabila!"
+        )
+    else:
+        err_msg = res.json().get("detail", "Failed to link wallet.")
+        await interaction.followup.send(f"❌ **Error:** {err_msg}")
+
 @bot.event
 async def on_ready():
     print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")

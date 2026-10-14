@@ -45,6 +45,29 @@ def mint_nex_tokens(amount: float):
     print(f"   View on Explorer: https://hashscan.io/testnet/token/{token_id}")
     return receipt.status
 
+# Place near the end of hedera_relayer.py, right before main execution
+from hiero_sdk_python import TransferTransaction, AccountId, TokenId
+
+def transfer_nex_tokens(target_account_id: str, amount: float):
+    token_id = TokenId.from_string(TOKEN_ID_STR)
+    recipient = AccountId.from_string(target_account_id)
+    base_units = int(amount * 10000)
+
+    print(f"💸 Transferring {amount} NEX to {target_account_id} on Hedera Testnet...")
+
+    transaction = (
+        TransferTransaction()
+        .add_token_transfer(token_id, OPERATOR_ID, -base_units)
+        .add_token_transfer(token_id, recipient, base_units)
+        .freeze_with(client)
+    )
+
+    signed_tx = transaction.sign(OPERATOR_KEY)
+    receipt = signed_tx.execute(client)
+
+    print(f"✅ Transfer Successful! Status: {receipt.status}")
+    return receipt.status
+
 if __name__ == "__main__":
     # Test minting 100 NEX to Treasury
     mint_nex_tokens(100.0)

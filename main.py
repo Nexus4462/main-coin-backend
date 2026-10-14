@@ -310,6 +310,12 @@ class OperatorGiftRequest(BaseModel):
     item_type: str = "Creator_Reward"
     reason: str = "Operator Special Gift"
 
+class WalletLinkRequest(BaseModel):
+    player_id: str
+    hdera_account_id: str
+
+HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+S"
+
 # =====================================================================
 # 6. ACCOUNT LINKING & DISCORD IDENTITY ENDPOINTS
 # =====================================================================
@@ -357,6 +363,26 @@ async def verify_link_code(payload: dict = Body(...)):
         "prestige": 0,
         "message": f"Successfully linked {discord_tag} to player {player_id}!"
     }
+@app.post("/api/wallet/link")
+async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
+    if not re.match(HEDERA_ACCOUNT_REGEX, data.hedera_account_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Hedera Account ID format. Expected format: 0.0.123456"
+
+        )
+    player = db.query(PlayerProfile).filter(PlayerProfile.player_id == data.player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="Player profile not found.")
+
+    player.hedera_wallet_id = data.hedera_account_id
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"
+    }
+          
 
 # =====================================================================
 # 7. CORE API ENDPOINTS & MOBILE CONTROLS
