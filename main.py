@@ -412,6 +412,56 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
         "hedera_wallet_id": connected.external_account_id
     }
 
+@app.post("/api/v1/player/{player_id}/claim")
+def process_player_claim(player_id: str, db: Session = Depends(get_db)):
+    """Executes HTS token transfer on Hedera for a player's spendable balance and clears off-chain DB balance."""
+    # 1. Fetch player balance
+    player = get_or_create_player(db, player_id)
+    if player.spendable_nex <= 0:
+        raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
+
+    # 2. Fetch linked Hedera wallet from connected_accounts table
+    connected = db.query(ConnectedAccountModel).filter(
+        ConnectedAccountModel.player_id == player_id,
+        ConnectedAccountModel.platform_name == "hedera_wallet"
+    ).first()
+
+    if not connected or not connected.external_account_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="No linked Hedera wallet found. Run /link-wallet in Discord first!"
+        )
+
+    claim_amount = player.spendable_nex
+
+    # 3. Execute HTS transfer via hedera_relayer
+    from hedera_relayer import transfer_nex_tokens
+    status = transfer_nex_tokens(connected.external_account_id, claim_amount)
+
+    # 4. On SUCCESS, zero out off-chain balance and log audit record
+    if str(status) == "SUCCESS":
+        player.spendable_nex = 0.0
+        
+        audit_entry = AuditLogModel(
+            action_type="ONCHAIN_CLAIM",
+            player_id=player.player_id,
+            amount_nex=claim_amount,
+            details=f"Claimed {claim_amount:.4f} NEX on-chain to {connected.external_account_id}"
+        )
+        db.add(audit_entry)
+        db.commit()
+
+        return {
+            "status": "success",
+            "amount": claim_amount,
+            "wallet": connected.external_account_id
+        }
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail="Hedera on-chain token transfer failed. Ensure wallet has associated NEX Token 0.0.10991235."
+        )
+
 # =====================================================================
 # 7. CORE API ENDPOINTS & MOBILE CONTROLS
 # =====================================================================

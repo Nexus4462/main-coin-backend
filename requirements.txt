@@ -7,3 +7,4 @@ pydantic
 httpx
 discord.py
 python-dotenv
+hiero-sdk-python
