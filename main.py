@@ -5,6 +5,8 @@ import hashlib
 import requests
 import random
 import string
+import re
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse
