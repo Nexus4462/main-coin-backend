@@ -396,7 +396,22 @@ async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
         "status": "success",
         "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"
     }
-          
+
+@app.get("/api/v1/player/{player_id}/wallet")
+def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
+    connected = db.query(ConnectedAccountModel).filter(
+        ConnectedAccountModel.player_id == player_id,
+        ConnectedAccountModel.platform_name == "hedera_wallet"
+    ).first()
+
+    if not connected:
+        return {"player_id": player_id, "hedera_wallet_id": None}
+
+    return {
+        "player_id": player_id,
+        "hedera_wallet_id": connected.external_account_id
+    }
+
 # =====================================================================
 # 7. CORE API ENDPOINTS & MOBILE CONTROLS
 # =====================================================================

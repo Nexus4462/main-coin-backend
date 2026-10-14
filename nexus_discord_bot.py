@@ -72,18 +72,55 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
         await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)        
 
 # --- PRIVACY COMMAND: Claim Monthly Reward ---
-@bot.tree.command(name="claim-monthly", description="Claim monthly loyalty NEX reward token allowance")
-@app_commands.describe(player_id="Your Nexus Player ID")
-async def claim_monthly(interaction: discord.Interaction, player_id: str):
+@bot.tree.command(name="claim-monthly", description="Claim spendable NEX balance on-chain to your linked Hedera wallet")
+async def claim_monthly(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
+    player_id = "salina_pilot_01"  # Matches active profile in nexus-db
+
+    async with httpx.AsyncClient() as client:
+        # 1. Fetch current spendable balance
+        res = await client.get(f"{BACKEND_URL}/api/v1/player/{player_id}")
+        if res.status_code != 200:
+            await interaction.followup.send("❌ Profile not found.")
+            return
+
+        data = res.json()
+        spendable_nex = data.get("spendable_nex", 0.0)
+
+        if spendable_nex <= 0:
+            await interaction.followup.send("⚠️ You have 0 NEX available to claim.")
+            return
+
+        # 2. Check for linked Hedera wallet in nexus-db
+        wallet_res = await client.get(f"{BACKEND_URL}/api/v1/player/{player_id}/wallet")
+        wallet_data = wallet_res.json() if wallet_res.status_code == 200 else {}
+        target_wallet = wallet_data.get("hedera_wallet_id")
+
+        if not target_wallet:
+            await interaction.followup.send(
+                "❌ **No Wallet Linked!** Run `/link-wallet account_id:0.0.XXXXXX` first before claiming."
+            )
+            return
+
+    # 3. Execute HTS On-Chain Transfer via Relayer
     try:
-        await interaction.followup.send(
-            f"🎁 **Monthly Loyalty Claim Processed!**\nPlayer `{player_id}` profile active. Use `/balance` to check updated NEX.",
-            ephemeral=True
-        )
+        from hedera_relayer import transfer_nex_tokens
+        status = transfer_nex_tokens(target_wallet, spendable_nex)
+
+        if status and str(status) == "SUCCESS":
+            await interaction.followup.send(
+                f"🎉 **Claim Successful!**\n"
+                f"Transferred **{spendable_nex} NEX** to `{target_wallet}`!\n"
+                f"View on HashScan: https://hashscan.io/testnet/account/{target_wallet}"
+            )
+        else:
+            await interaction.followup.send(
+                "❌ On-chain transfer failed. Verify your wallet has associated Token `0.0.10991235`!"
+            )
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Error processing claim: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Transfer Error: {str(e)}")
+
+
 
 # --- PRIVACY COMMAND: Link Account ---
 @bot.tree.command(name="link", description="Link your game account using a generated code")
