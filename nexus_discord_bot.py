@@ -48,7 +48,6 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
             if res.status_code == 200:
                 data = res.json()
                 
-                # --- EMBLEM & NAMETAG INTEGRATION ---
                 nametag_data = data.get("nametag_style", {})
                 emblem = nametag_data.get("emblem_icon")
                 emblem_prefix = f"{emblem} " if emblem else ""
@@ -77,29 +76,6 @@ async def claim_monthly(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     player_id = "salina_pilot_01"
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{BACKEND_URL}/api/v1/player/{player_id}/claim")
-
-    if res.status_code == 200:
-        data = res.json()
-        amount = data.get("amount")
-        wallet = data.get("wallet")
-        await interaction.followup.send(
-            f"🎉 **Claim Successful!**\n"
-            f"Transferred **{amount} NEX** to `{wallet}`!\n"
-            f"View on HashScan: https://hashscan.io/testnet/account/{wallet}"
-        )
-    else:
-        err_detail = res.json().get("detail", "Transfer failed.")
-        await interaction.followup.send(f"❌ **Claim Error:** {err_detail}")
-
-
-# --- PRIVACY COMMAND: Link Account ---
-@bot.tree.command(name="claim-monthly", description="Claim spendable NEX balance on-chain to your linked Hedera wallet")
-async def claim_monthly(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    player_id = "salina_pilot_01"
-
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(f"{BACKEND_URL}/api/v1/player/{player_id}/claim")
@@ -122,30 +98,34 @@ async def claim_monthly(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
 
-# Place alongside existing slash commands in bot.py
+# --- PRIVACY COMMAND: Link Account ---
 @bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")
 @app_commands.describe(account_id="Your Hedera Account ID (e.g. 0.0.10770972)")
 async def link_wallet(interaction: discord.Interaction, account_id: str):
     await interaction.response.defer(ephemeral=True)
-    
     player_id = "salina_pilot_01"  # Matches active profile in nexus-db
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            f"{BACKEND_URL}/api/wallet/link",
-            json={"player_id": player_id, "hedera_account_id": account_id}
-        )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.post(
+                f"{BACKEND_URL}/api/wallet/link",
+                json={"player_id": player_id, "hedera_account_id": account_id}
+            )
 
-    if res.status_code == 200:
-        await interaction.followup.send(
-            f"🔗 **Wallet Linked Successfully!**\n"
-            f"Player: `{player_id}`\n"
-            f"Hedera Account: `{account_id}`\n\n"
-            f"Make sure account `{account_id}` has associated Token `0.0.10991235` in HashPack or Kabila!"
-        )
-    else:
-        err_msg = res.json().get("detail", "Failed to link wallet.")
-        await interaction.followup.send(f"❌ **Error:** {err_msg}")
+        if res.status_code == 200:
+            await interaction.followup.send(
+                f"🔗 **Wallet Linked Successfully!**\n"
+                f"Player: `{player_id}`\n"
+                f"Hedera Account: `{account_id}`\n\n"
+                f"Make sure account `{account_id}` has associated Token `0.0.10991235` in HashPack or Kabila!"
+            )
+        else:
+            err_msg = res.json().get("detail", "Failed to link wallet.")
+            await interaction.followup.send(f"❌ **Error:** {err_msg}")
+    except httpx.TimeoutException:
+        await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
 
 @bot.event
 async def on_ready():
