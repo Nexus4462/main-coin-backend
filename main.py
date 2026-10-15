@@ -28,7 +28,8 @@ ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))        # Optional Admin rol
 CURRENT_ENV = os.getenv("HEDERA_NETWORK", "testnet").lower() # 'testnet' or 'mainnet'
 
 OPERATOR_ID = AccountId.from_string(os.getenv("HEDERA_OPERATOR_ID", "0.0.10770972"))
-OPERATOR_KEY = PrivateKey.from_string(os.getenv("HEDERA_OPERATOR_KEY", ""))
+raw_key = os.getenv("HEDERA_OPERATOR_KEY", "").strip().strip('"').strip("'")
+OPERATOR_KEY = PrivateKey.from_string(raw_key) if raw_key else None
 TOKEN_ID = TokenId.from_string(os.getenv("TOKEN_ID", "0.0.10991235"))
 
 MAX_CLAIM_LIMIT = 500.0  # Max NEX per single claim
