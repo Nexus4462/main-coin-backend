@@ -1,782 +1,380 @@
 import os
-import time
-import hmac
-import hashlib
+import sqlite3
+import logging
 import requests
-import random
-import string
-import re
-import asyncio
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from datetime import datetime, timedelta
-
-# =====================================================================
-# 1. GLOBAL NETWORK CONFIGURATION & CONSTANTS
-# =====================================================================
-TOKEN_NAME = "Nexus"
-TOKEN_TICKER = "NEX"
-
-# Secrets pulled from Environment Variables (Fallback to local dev defaults)
-# Secrets pulled from Environment Variables (Strict Production Security)
-_raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET")
-if not _raw_hmac_secret:
-    raise ValueError("CRITICAL SECURITY ERROR: 'HMAC_SECRET' environment variable is missing on the server!")
-
-NEXUS_HMAC_SECRET = _raw_hmac_secret.encode('utf-8')
-
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
-if not ADMIN_SECRET_KEY:
-    raise ValueError("CRITICAL SECURITY ERROR: 'ADMIN_SECRET_KEY' environment variable is missing on the server!")
-
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Configured in Render Environment Variables
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
-
-# Global In-Memory Security & System State
-BLACKHOLE_IP_POOL: set = set()
-PROCESSED_NONCES: set = set()
-IS_MINTING_PAUSED: bool = False
-
-LINK_CODES: Dict[str, Any] = {}
-
-# =====================================================================
-# 2. DATABASE MODELS & SCHEMA DEFINITIONS
-# =====================================================================
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+import discord
+from discord import app_commands, ui
+from discord.ext import commands
+from dotenv import load_dotenv
+from hiero_sdk_python import (
+    Client,
+    AccountId,
+    PrivateKey,
+    TokenId,
+    TokenAssociateTransaction,
+    TransferTransaction,
+    Hbar
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
-class PlayerModel(Base):
-    __tablename__ = "players"
+# -------------------------------------------------------------------
+# Setup & Environment Configuration
+# -------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+load_dotenv()
 
-    player_id = Column(String, primary_key=True, index=True)
-    spendable_nex = Column(Float, default=0.0)
-    total_nex_earned = Column(Float, default=0.0)
-    total_hours_played = Column(Float, default=0.0)
-    prestige_level = Column(Integer, default=0)
-    created_at = Column(Float, default=time.time)
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "0"))  # Set your #admin-alerts channel ID
+ADMIN_ROLE_ID = int(os.getenv("ADMIN_ROLE_ID", "0"))        # Optional Admin role ID
+CURRENT_ENV = os.getenv("HEDERA_NETWORK", "testnet").lower() # 'testnet' or 'mainnet'
 
-class ConnectedAccountModel(Base):
-    __tablename__ = "connected_accounts"
+OPERATOR_ID = AccountId.from_string(os.getenv("HEDERA_OPERATOR_ID", "0.0.10770972"))
+OPERATOR_KEY = PrivateKey.from_string(os.getenv("HEDERA_OPERATOR_KEY", ""))
+TOKEN_ID = TokenId.from_string(os.getenv("TOKEN_ID", "0.0.10991235"))
 
-    player_id = Column(String, primary_key=True, index=True)
-    platform_name = Column(String, nullable=False)        # e.g., "minecraft", "steam", "discord", "hedera_wallet"
-    external_account_id = Column(String, nullable=False, unique=True)
-    linked_at = Column(Float, default=time.time)
+MAX_CLAIM_LIMIT = 500.0  # Max NEX per single claim
 
-class PlayerInventoryModel(Base):
-    __tablename__ = "player_inventory"
+# Initialize Hedera Client
+if CURRENT_ENV == "mainnet":
+    client = Client.for_mainnet()
+else:
+    client = Client.for_testnet()
 
-    instance_id = Column(String, primary_key=True, index=True)
-    player_id = Column(String, index=True, nullable=False)
-    item_id = Column(String, nullable=False)
-    item_type = Column(String, default="Standard")          # "Standard", "Creator_Reward", "Event_Gift"
-    acquired_via = Column(String, default="Store_Purchase")  # "Store_Purchase", "Operator_Gift"
-    hours_logged_on_item = Column(Float, default=0.0)
-    hours_required_to_unlock = Column(Float, default=10.0)
-    is_tradeable = Column(Integer, default=0)                # 0 = Account-Locked, 1 = Tradeable
-    acquired_at = Column(Float, default=time.time)
+client.set_operator(OPERATOR_ID, OPERATOR_KEY)
 
-class StoreCatalogModel(Base):
-    __tablename__ = "store_catalog"
+# Initialize Discord Bot
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-    item_id = Column(String, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    description = Column(String, nullable=False)
-    price_nex = Column(Float, nullable=False)
-    developer_id = Column(String, nullable=False)
-    multiplier_boost = Column(Float, default=1.0)
-    is_active = Column(Boolean, default=True)
+# -------------------------------------------------------------------
+# Database Initialization (SQLite)
+# -------------------------------------------------------------------
+def init_db():
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    
+    # Dual-wallet support (Testnet & Mainnet) with UNIQUE constraints
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            discord_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            testnet_wallet TEXT UNIQUE DEFAULT NULL,
+            mainnet_wallet TEXT UNIQUE DEFAULT NULL,
+            spendable_nex REAL DEFAULT 0.0,
+            total_earned_nex REAL DEFAULT 0.0
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-class DeveloperModel(Base):
-    __tablename__ = "developers"
+init_db()
 
-    developer_id = Column(String, primary_key=True, index=True)
-    developer_name = Column(String, nullable=False)
-    earned_nex_balance = Column(Float, default=0.0)
-    hedera_wallet_id = Column(String, nullable=True)
+# -------------------------------------------------------------------
+# Helper Functions & Hedera Utilities
+# -------------------------------------------------------------------
+def get_user_profile(discord_id: str):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT discord_id, profile_id, testnet_wallet, mainnet_wallet, spendable_nex, total_earned_nex FROM user_profiles WHERE discord_id = ?", (str(discord_id),))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "discord_id": row[0],
+            "profile_id": row[1],
+            "testnet_wallet": row[2],
+            "mainnet_wallet": row[3],
+            "spendable_nex": row[4],
+            "total_earned_nex": row[5]
+        }
+    return None
 
-class AuditLogModel(Base):
-    __tablename__ = "audit_logs"
+def update_user_wallet(discord_id: str, profile_id: str, account_id: str, env: str):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    column = "testnet_wallet" if env == "testnet" else "mainnet_wallet"
+    
+    cursor.execute("SELECT discord_id FROM user_profiles WHERE discord_id = ?", (str(discord_id),))
+    if cursor.fetchone():
+        cursor.execute(f"UPDATE user_profiles SET {column} = ? WHERE discord_id = ?", (account_id, str(discord_id)))
+    else:
+        cursor.execute(f"INSERT INTO user_profiles (discord_id, profile_id, {column}) VALUES (?, ?, ?)", (str(discord_id), profile_id, account_id))
+    
+    conn.commit()
+    conn.close()
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(Float, default=time.time)
-    action_type = Column(String, nullable=False)
-    player_id = Column(String, nullable=True)
-    amount_nex = Column(Float, default=0.0)
-    details = Column(String, nullable=True)
-
-Base.metadata.create_all(bind=engine)
-
-def get_db():
-    db = SessionLocal()
+def check_token_association(account_id: str, token_id_str: str) -> bool:
+    """Checks Hedera Mirror Node API to verify if token is associated."""
+    base_url = "https://mainnet-public.mirrornode.hedera.com" if CURRENT_ENV == "mainnet" else "https://testnet.mirrornode.hedera.com"
+    url = f"{base_url}/api/v1/accounts/{account_id}/tokens"
     try:
-        yield db
-    finally:
-        db.close()
+        resp = requests.get(url, params={"token.id": token_id_str, "limit": 1}, timeout=5)
+        if resp.status_code == 200:
+            tokens = resp.json().get("tokens", [])
+            return len(tokens) > 0
+    except Exception as e:
+        logging.error(f"Mirror node check error: {e}")
+    return False
 
-def seed_default_catalog():
-    db = SessionLocal()
+async def ensure_treasury_associated():
+    """Startup auto-fix: Ensures Treasury (0.0.10770972) is associated on boot."""
     try:
-        if not db.query(StoreCatalogModel).first():
-            items = [
-                StoreCatalogModel(
-                    item_id="item_boost_01",
-                    name="Alpha Vector Crest",
-                    description="1.05x Passive NEX Earn Boost Across All Games",
-                    price_nex=100.0,
-                    developer_id="dev_nexus_core",
-                    multiplier_boost=1.05
-                ),
-                StoreCatalogModel(
-                    item_id="item_boost_02",
-                    name="Hyperion Core Badge",
-                    description="1.15x Passive NEX Earn Boost & Crimson Name Accent",
-                    price_nex=500.0,
-                    developer_id="dev_nexus_core",
-                    multiplier_boost=1.15
-                )
-            ]
-            db.add_all(items)
-            
-            if not db.query(DeveloperModel).filter_by(developer_id="dev_nexus_core").first():
-                db.add(DeveloperModel(
-                    developer_id="dev_nexus_core",
-                    developer_name="Nexus Core Labs",
-                    earned_nex_balance=0.0,
-                    hedera_wallet_id="0.0.123456"
-                ))
-            db.commit()
-    finally:
-        db.close()
+        logging.info(f"Running Treasury association check for {OPERATOR_ID} with Token {TOKEN_ID}...")
+        tx = TokenAssociateTransaction().set_account_id(OPERATOR_ID).set_token_ids([TOKEN_ID]).freeze_with(client)
+        signed_tx = tx.sign(OPERATOR_KEY)
+        receipt = signed_tx.execute(client)
+        logging.info(f"✅ Treasury Association Status: {receipt.status}")
+    except Exception as e:
+        if "184" in str(e) or "TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT" in str(e):
+            logging.info("ℹ️ Treasury account is already associated with token.")
+        else:
+            logging.warning(f"Treasury association note: {e}")
 
-seed_default_catalog()
+# -------------------------------------------------------------------
+# Discord Interactive Views (Re-link Safety Modals & Buttons)
+# -------------------------------------------------------------------
+class RelinkReasonModal(ui.Modal, title="Confirm Wallet Re-Link"):
+    reason = ui.TextInput(
+        label="Reason for wallet change",
+        placeholder="e.g., New phone / HashPack account reset",
+        required=True,
+        max_length=200
+    )
 
-# =====================================================================
-# 3. FASTAPI APP INIT & HONEYCOMB BLACKHOLE MIDDLEWARE
-# =====================================================================
-app = FastAPI(
-    title=f"{TOKEN_NAME} Engine | Central Bank API",
-    description=f"Operator-controlled Central Bank Architecture & Telemetry Relayer for {TOKEN_NAME} ({TOKEN_TICKER}).",
-    version="2.0.0"
-)
+    def __init__(self, old_wallet: str, new_wallet: str):
+        super().__init__()
+        self.old_wallet = old_wallet
+        self.new_wallet = new_wallet
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        profile_id = f"user_{user_id[:6]}"
+        
+        try:
+            update_user_wallet(user_id, profile_id, self.new_wallet, CURRENT_ENV)
+        except sqlite3.IntegrityError:
+            await interaction.response.send_message("❌ Error: This wallet address is already linked to another Discord user!", ephemeral=True)
+            return
 
-def trigger_discord_alert(details: str):
-    """Sends a real-time security alert to your phone via Discord Webhook."""
-    if not DISCORD_WEBHOOK_URL:
-        print(f"⚠️ [SECURITY ALERT - NO WEBHOOK CONFIGURED]: {details}")
+        # Audit Alert to Private Admin Channel
+        if ADMIN_CHANNEL_ID:
+            admin_chan = interaction.client.get_channel(ADMIN_CHANNEL_ID)
+            if admin_chan:
+                embed = discord.Embed(title="⚠️ Wallet Re-Link Executed", color=discord.Color.orange())
+                embed.add_field(name="User", value=f"{interaction.user.mention} (`{user_id}`)", inline=False)
+                embed.add_field(name="Environment", value=CURRENT_ENV.upper(), inline=True)
+                embed.add_field(name="Old Wallet", value=f"`{self.old_wallet}`", inline=True)
+                embed.add_field(name="New Wallet", value=f"`{self.new_wallet}`", inline=True)
+                embed.add_field(name="Reason", value=f"`{self.reason.value}`", inline=False)
+                await admin_chan.send(embed=embed)
+
+        await interaction.response.send_message(f"✅ Wallet re-linked successfully to `{self.new_wallet}` ({CURRENT_ENV.upper()}).", ephemeral=True)
+
+class RelinkConfirmView(ui.View):
+    def __init__(self, old_wallet: str, new_wallet: str):
+        super().__init__(timeout=60)
+        self.old_wallet = old_wallet
+        self.new_wallet = new_wallet
+
+    @ui.button(label="Confirm Re-Link", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(RelinkReasonModal(self.old_wallet, self.new_wallet))
+
+    @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message("❌ Re-link request cancelled. Your current wallet remains linked.", ephemeral=True)
+
+# -------------------------------------------------------------------
+# Bot Commands
+# -------------------------------------------------------------------
+@bot.event
+async def on_ready():
+    logging.info(f"Bot active as {bot.user} ({bot.user.id})")
+    
+    # Auto-associate Treasury on startup
+    await ensure_treasury_associated()
+    
+    try:
+        synced = await bot.tree.sync()
+        logging.info(f"Synced {len(synced)} application commands.")
+    except Exception as e:
+        logging.error(f"Command sync failed: {e}")
+
+@bot.tree.command(name="setup", description="Guide on setting up HashPack to receive NEX tokens")
+async def setup(interaction: discord.Interaction):
+    net_name = "Testnet" if CURRENT_ENV == "testnet" else "Mainnet"
+    
+    embed = discord.Embed(title=f"🛠️ Nexus Wallet Setup Guide ({net_name})", color=discord.Color.blue())
+    
+    if CURRENT_ENV == "testnet":
+        embed.add_field(
+            name="1. Enable Testnet in HashPack",
+            value="Open HashPack -> **Settings** -> **Developer Mode** -> Toggle **Testnet**.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="1. Standard HashPack Account",
+            value="Open HashPack (Mainnet is active by default).",
+            inline=False
+        )
+        
+    embed.add_field(
+        name="2. Associate NEX Token",
+        value=f"In HashPack, tap **Add Token (+)** under Assets and enter:\n`{TOKEN_ID}`",
+        inline=False
+    )
+    embed.add_field(
+        name="3. Link Wallet to Discord",
+        value="Run `/link-wallet account_id:0.0.XXXXXXX` in this server.",
+        inline=False
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="balance", description="Check your accrued NEX earnings and linked wallet")
+async def balance(interaction: discord.Interaction):
+    user_data = get_user_profile(str(interaction.user.id))
+    
+    if not user_data:
+        await interaction.response.send_message("❌ Profile not found! Run `/setup` to get started.", ephemeral=True)
         return
 
+    active_wallet = user_data["testnet_wallet"] if CURRENT_ENV == "testnet" else user_data["mainnet_wallet"]
+    
+    embed = discord.Embed(title="💳 Nexus Player Vault Summary", color=discord.Color.green())
+    embed.add_field(name="Profile ID", value=user_data["profile_id"], inline=True)
+    embed.add_field(name="Spendable NEX", value=f"{user_data['spendable_nex']:.4f} NEX", inline=True)
+    embed.add_field(name="Active Network", value=CURRENT_ENV.upper(), inline=True)
+    embed.add_field(name="Linked Wallet", value=f"`{active_wallet or 'None Linked'}`", inline=False)
+    embed.set_footer(text=f"Nexus Central Bank • Render {CURRENT_ENV.capitalize()}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="link-wallet", description="Link your Hedera account ID to your profile")
+@app_commands.describe(account_id="Your Hedera Account ID (e.g., 0.0.11035516)")
+async def link_wallet(interaction: discord.Interaction, account_id: str):
+    account_id = account_id.strip()
+    user_id = str(interaction.user.id)
+    user_data = get_user_profile(user_id)
+    active_wallet = user_data["testnet_wallet"] if (user_data and CURRENT_ENV == "testnet") else (user_data["mainnet_wallet"] if user_data else None)
+
+    # Prompt user with interactive buttons if they are replacing an existing wallet link
+    if active_wallet and active_wallet != account_id:
+        view = RelinkConfirmView(old_wallet=active_wallet, new_wallet=account_id)
+        await interaction.response.send_message(
+            f"⚠️ You already have `{active_wallet}` linked to your account. Are you sure you want to replace it with `{account_id}`?",
+            view=view,
+            ephemeral=True
+        )
+        return
+
+    profile_id = user_data["profile_id"] if user_data else f"salina_pilot_{user_id[:4]}"
+    
     try:
-        payload = {
-            "content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"
-        }
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5.0)
-        response.raise_for_status()
-        print(f"✅ Discord security alert dispatched successfully: {details}")
+        update_user_wallet(user_id, profile_id, account_id, CURRENT_ENV)
+    except sqlite3.IntegrityError:
+        await interaction.response.send_message("❌ Error: This wallet address is already linked to another user!", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🔗 Wallet Linked Successfully!", color=discord.Color.blue())
+    embed.add_field(name="Player Profile", value=profile_id, inline=True)
+    embed.add_field(name="Network Target", value=CURRENT_ENV.upper(), inline=True)
+    embed.add_field(name="Hedera Account", value=f"`{account_id}`", inline=False)
+    embed.add_field(
+        name="Important Note",
+        value=f"Ensure `{account_id}` has associated Token `{TOKEN_ID}` in HashPack on **{CURRENT_ENV.upper()}**!",
+        inline=False
+    )
+    embed.set_footer(text=f"Nexus Central Bank Network • Render {CURRENT_ENV.capitalize()}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="claim-monthly", description="Claim your monthly accrued NEX token distribution")
+async def claim_monthly(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    user_id = str(interaction.user.id)
+    user_data = get_user_profile(user_id)
+
+    if not user_data:
+        await interaction.followup.send("❌ Profile not found. Please run `/setup` first.", ephemeral=True)
+        return
+
+    target_wallet = user_data["testnet_wallet"] if CURRENT_ENV == "testnet" else user_data["mainnet_wallet"]
+    spendable = user_data["spendable_nex"]
+
+    if not target_wallet:
+        await interaction.followup.send(f"❌ You have not linked a {CURRENT_ENV.upper()} wallet! Run `/link-wallet` first.", ephemeral=True)
+        return
+
+    if spendable <= 0:
+        await interaction.followup.send("❌ You have no spendable NEX tokens to claim right now.", ephemeral=True)
+        return
+
+    if spendable > MAX_CLAIM_LIMIT:
+        await interaction.followup.send(f"⚠️ Claim exceeds safety threshold ({MAX_CLAIM_LIMIT} NEX max). Contact an admin.", ephemeral=True)
+        return
+
+    # Mirror Node Pre-check for Token Association
+    if not check_token_association(target_wallet, str(TOKEN_ID)):
+        await interaction.followup.send(
+            f"❌ **Token Not Associated!**\nYour wallet `{target_wallet}` has not added NEX (`{TOKEN_ID}`) under Assets in HashPack on **{CURRENT_ENV.upper()}**.",
+            ephemeral=True
+        )
+        return
+
+    # Execute On-Chain HTS Transfer
+    try:
+        recipient_id = AccountId.from_string(target_wallet)
+        
+        # Convert float NEX tokens to integer base units (assuming 4 decimal places)
+        token_amount = int(spendable * 10000)
+
+        tx = (
+            TransferTransaction()
+            .add_token_transfer(TOKEN_ID, OPERATOR_ID, -token_amount)
+            .add_token_transfer(TOKEN_ID, recipient_id, token_amount)
+            .freeze_with(client)
+        )
+        signed_tx = tx.sign(OPERATOR_KEY)
+        receipt = signed_tx.execute(client)
+        tx_id = signed_tx.transaction_id.to_string()
+
+        # Update DB: Zero out spendable balance
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_profiles SET spendable_nex = 0.0 WHERE discord_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+
+        # Public / Ephemeral User Success Response
+        embed = discord.Embed(title="✅ NEX Settlement Complete!", color=discord.Color.green())
+        embed.add_field(name="Amount Claimed", value=f"{spendable:.4f} NEX", inline=True)
+        embed.add_field(name="Destination Wallet", value=f"`{target_wallet}`", inline=True)
+        embed.add_field(name="Status", value=str(receipt.status), inline=False)
+        embed.set_footer(text=f"Nexus Central Bank Network • Render {CURRENT_ENV.capitalize()}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Audit Log to Private Admin Channel
+        if ADMIN_CHANNEL_ID:
+            admin_chan = interaction.client.get_channel(ADMIN_CHANNEL_ID)
+            if admin_chan:
+                log_embed = discord.Embed(title="💸 NEX Claim Settled", color=discord.Color.gold())
+                log_embed.add_field(name="User", value=f"{interaction.user.mention} (`{user_id}`)", inline=True)
+                log_embed.add_field(name="Amount", value=f"{spendable:.4f} NEX", inline=True)
+                log_embed.add_field(name="Wallet", value=f"`{target_wallet}` ({CURRENT_ENV.upper()})", inline=False)
+                log_embed.add_field(
+                    name="HashScan Link",
+                    value=f"[View Explorer](https://hashscan.io/{CURRENT_ENV}/transaction/{tx_id})",
+                    inline=False
+                )
+                await admin_chan.send(embed=log_embed)
+
     except Exception as e:
-        print(f"❌ Discord alert dispatch failed: {e}")
-
-@app.middleware("http")
-async def blackhole_bot_trap_middleware(request: Request, call_next):
-    client_ip = request.client.host or "127.0.0.1"
-
-    # Honeypot Traps: Flag malicious scanners attempting to hit fake administrative endpoints
-    if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
-        BLACKHOLE_IP_POOL.add(client_ip)
-        trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
-        return JSONResponse(
-            status_code=200, 
-            content={"status": "success", "message": "Debug state logged."}
-        )
-
-    # Silent Blackhole Neutralization: Return fake success without database operations or minting
-    if client_ip in BLACKHOLE_IP_POOL:
-        return JSONResponse(
-            status_code=200, 
-            content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"}
-        )
-
-    response = await call_next(request)
-    return response
-
-# =====================================================================
-# 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
-# =====================================================================
-def int_to_roman(num: int) -> str:
-    if num <= 0:
-        return ""
-    val = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
-    syb = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
-    roman_num = ""
-    i = 0
-    while num > 0:
-        for _ in range(num // val[i]):
-            roman_num += syb[i]
-            num -= val[i]
-        i += 1
-    return roman_num
-
-def get_or_create_player(db: Session, player_id: str) -> PlayerModel:
-    player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
-    if not player:
-        player = PlayerModel(player_id=player_id)
-        db.add(player)
-        db.commit()
-        db.refresh(player)
-    return player
-
-def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
-    prestige_colors = {
-        0: "#FFFFFF",  # Base White
-        1: "#CD7F32",  # Bronze
-        2: "#C0C0C0",  # Silver
-        3: "#FFD700",  # Gold
-    }
-    color = prestige_colors.get(player.prestige_level, "#00F0FF")
-
-    emblem = None
-    try:
-        special_item = db.query(PlayerInventoryModel).filter(
-            PlayerInventoryModel.player_id == player.player_id,
-            PlayerInventoryModel.item_type == "Creator_Reward"
-        ).first()
-        if special_item:
-            emblem = "🏆"
-    except Exception:
-        db.rollback()  # Safely handle missing table or column schema issues
-
-    if emblem is None and player.total_hours_played < 24.0:
-        emblem = "⚡"
-
-    if player.prestige_level > 0:
-        prestige_tag = f"[{TOKEN_TICKER}-{int_to_roman(player.prestige_level)}]"
-    else:
-        prestige_tag = f"[{TOKEN_TICKER}]"
-
-    formatted_display = f"{emblem + ' ' if emblem else ''}{prestige_tag} {{username}}".strip()
-
-    return {
-        "text_color": color,
-        "emblem_icon": emblem,
-        "prestige_level": player.prestige_level,
-        "prestige_roman": int_to_roman(player.prestige_level),
-        "prestige_tag": prestige_tag,
-        "display_name_formatted": formatted_display
-    }
-
-# =====================================================================
-# 5. API REQUEST / RESPONSE SCHEMAS
-# =====================================================================
-class TelemetryPingRequest(BaseModel):
-    player_id: str
-    minutes_played: int
-    timestamp: int
-    nonce: str
-    signature: str
-
-class StorePurchaseRequest(BaseModel):
-    player_id: str
-    item_id: str
-
-class DeveloperItemCreateRequest(BaseModel):
-    item_id: str
-    name: str
-    description: str
-    price_nex: float
-    developer_id: str
-    multiplier_boost: float = 1.0
-
-class OperatorGiftRequest(BaseModel):
-    target_player_id: str
-    item_id: str
-    item_type: str = "Creator_Reward"
-    reason: str = "Operator Special Gift"
-
-class WalletLinkRequest(BaseModel):
-    player_id: str
-    hedera_account_id: str
-
-HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+$"
-
-# =====================================================================
-# 6. ACCOUNT LINKING & DISCORD IDENTITY ENDPOINTS
-# =====================================================================
-@app.post("/api/v1/link/generate")
-async def generate_link_code(player_id: str = Body(..., embed=True)):
-    """Generates a temporary 10-minute linking code (NX-XXXX)."""
-    code_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    link_code = f"NX-{code_suffix}"
-    
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
-    LINK_CODES[link_code] = {"player_id": player_id, "expires": expires_at}
-    
-    return {
-        "status": "success",
-        "link_code": link_code,
-        "expires_in_seconds": 600,
-        "instructions": "Type `/link code:NX-XXXX` in Discord to bind your profile."
-    }
-
-@app.post("/api/v1/link/verify")
-async def verify_link_code(payload: dict = Body(...)):
-    """Verifies the link code submitted by nexus_discord_bot.py."""
-    link_code = payload.get("link_code", "").strip().upper()
-    discord_id = payload.get("discord_id")
-    discord_tag = payload.get("discord_tag")
-    
-    record = LINK_CODES.get(link_code)
-    
-    if not record:
-        raise HTTPException(status_code=400, detail="Invalid or expired link code.")
-    
-    if datetime.utcnow() > record["expires"]:
-        del LINK_CODES[link_code]
-        raise HTTPException(status_code=400, detail="Link code has expired. Generate a new one in-game.")
-    
-    player_id = record["player_id"]
-    del LINK_CODES[link_code]
-    
-    return {
-        "status": "success",
-        "player_id": player_id,
-        "discord_id": discord_id,
-        "discord_tag": discord_tag,
-        "level": 1,
-        "prestige": 0,
-        "message": f"Successfully linked {discord_tag} to player {player_id}!"
-    }
-
-@app.post("/api/wallet/link")
-async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
-    if not re.match(HEDERA_ACCOUNT_REGEX, data.hedera_account_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Hedera Account ID format. Expected format: 0.0.123456"
-        )
-        
-    player = db.query(PlayerModel).filter(PlayerModel.player_id == data.player_id).first()
-    if not player:
-        raise HTTPException(status_code=404, detail="Player profile not found.")
-
-    # Save connected account mapping
-    connected_acc = db.query(ConnectedAccountModel).filter(ConnectedAccountModel.player_id == data.player_id).first()
-    if not connected_acc:
-        connected_acc = ConnectedAccountModel(
-            player_id=data.player_id,
-            platform_name="hedera_wallet",
-            external_account_id=data.hedera_account_id
-        )
-        db.add(connected_acc)
-    else:
-        connected_acc.external_account_id = data.hedera_account_id
-
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"
-    }
-
-@app.get("/api/v1/player/{player_id}/wallet")
-def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
-    connected = db.query(ConnectedAccountModel).filter(
-        ConnectedAccountModel.player_id == player_id,
-        ConnectedAccountModel.platform_name == "hedera_wallet"
-    ).first()
-
-    if not connected:
-        return {"player_id": player_id, "hedera_wallet_id": None}
-
-    return {
-        "player_id": player_id,
-        "hedera_wallet_id": connected.external_account_id
-    }
-
-@app.post("/api/v1/player/{player_id}/claim")
-async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
-    """Executes HTS token transfer safely in a background thread to prevent thread freezing."""
-    # 1. Fetch player balance
-    player = get_or_create_player(db, player_id)
-    if player.spendable_nex <= 0:
-        raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
-
-    # 2. Fetch linked Hedera wallet
-    connected = db.query(ConnectedAccountModel).filter(
-        ConnectedAccountModel.player_id == player_id,
-        ConnectedAccountModel.platform_name == "hedera_wallet"
-    ).first()
-
-    if not connected or not connected.external_account_id:
-        raise HTTPException(
-            status_code=400, 
-            detail="No linked Hedera wallet found. Run /link-wallet in Discord first!"
-        )
-
-    claim_amount = player.spendable_nex
-
-    # 3. Offload synchronous Hedera SDK call to an async thread pool with a 15s timeout
-    try:
-        from hedera_relayer import transfer_nex_tokens
-        
-        status = await asyncio.wait_for(
-            asyncio.to_thread(transfer_nex_tokens, connected.external_account_id, claim_amount),
-            timeout=15.0
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Hedera Testnet transaction timed out. Please try again.")
-    except Exception as e:
-        # RETURN EXACT EXCEPTION DETAILS TO DISCORD FOR DIAGNOSTICS
-        import traceback
-        error_msg = f"Relayer Exception: {str(e)} | Details: {traceback.format_exc()[:150]}"
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    # 4. Clear DB balance on SUCCESS
-    if str(status) in ["SUCCESS", "Status.SUCCESS"]:
-        player.spendable_nex = 0.0
-        
-        audit_entry = AuditLogModel(
-            action_type="ONCHAIN_CLAIM",
-            player_id=player.player_id,
-            amount_nex=claim_amount,
-            details=f"Claimed {claim_amount:.4f} NEX on-chain to {connected.external_account_id}"
-        )
-        db.add(audit_entry)
-        db.commit()
-
-        return {
-            "status": "success",
-            "amount": claim_amount,
-            "wallet": connected.external_account_id
-        }
-    else:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Hedera transfer rejected with status: {status}"
-        )
-
-# =====================================================================
-# 7. CORE API ENDPOINTS & MOBILE CONTROLS
-# =====================================================================
-@app.get("/", response_class=HTMLResponse)
-def root_dashboard(db: Session = Depends(get_db)):
-    total_players = db.query(PlayerModel).count()
-    total_nex = db.query(PlayerModel).all()
-    circulating_nex = sum(p.spendable_nex for p in total_nex)
-    status_color = "#e74c3c" if IS_MINTING_PAUSED else "#3fb950"
-    status_label = "MINTING PAUSED" if IS_MINTING_PAUSED else "ACTIVE MAINNET RELAYER"
-    
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <title>{TOKEN_NAME} Engine | Operator Central Bank</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0b0e14; color: #e1e7ec; margin: 0; padding: 20px; }}
-                .container {{ max-width: 900px; margin: 0 auto; }}
-                .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; margin-bottom: 20px; }}
-                h1 {{ color: #58a6ff; font-size: 24px; margin-bottom: 5px; }}
-                .ticker {{ color: #8b949e; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }}
-                .metric {{ font-size: 32px; font-weight: bold; color: #3fb950; margin: 10px 0; }}
-                .badge {{ background: {status_color}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="card">
-                    <span class="ticker">{TOKEN_NAME} ({TOKEN_TICKER}) Central Bank</span>
-                    <h1>Operator Relayer Dashboard</h1>
-                    <p>Status: <span class="badge">{status_label}</span></p>
-                </div>
-                <div class="card">
-                    <h3>Network Metrics</h3>
-                    <p>Registered Players: <strong>{total_players}</strong></p>
-                    <p>Trapped Bot IPs: <strong style="color: #f85149;">{len(BLACKHOLE_IP_POOL)}</strong></p>
-                    <p>Circulating {TOKEN_TICKER}:</p>
-                    <div class="metric">{circulating_nex:,.2f} {TOKEN_TICKER}</div>
-                </div>
-            </div>
-        </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content, status_code=200)
-
-@app.post("/api/v1/telemetry")
-def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session = Depends(get_db)):
-    client_ip = request.client.host or "127.0.0.1"
-    current_time = int(time.time())
-
-    # --- KILL SWITCH CHECK ---
-    if IS_MINTING_PAUSED:
-        raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
-
-    # --- SECURITY LAYER 1: Replay Window Check ---
-    if abs(current_time - data.timestamp) > 300:
-        trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
-        raise HTTPException(status_code=401, detail="Expired telemetry payload window.")
-
-    # --- SECURITY LAYER 2: Nonce Single-Use Validation ---
-    if data.nonce in PROCESSED_NONCES:
-        BLACKHOLE_IP_POOL.add(client_ip)
-        trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`. IP Blackholed.")
-        raise HTTPException(status_code=401, detail="Replay payload detected.")
-
-    # --- SECURITY LAYER 3: Mathematical Velocity Cap ---
-    if data.minutes_played > 60 or data.minutes_played <= 0:
-        raise HTTPException(status_code=400, detail="Invalid gameplay duration telemetry.")
-
-    # --- SECURITY LAYER 4: HMAC Cryptographic Validation (With Dev Bypass) ---
-    if data.signature == "dev_bypass_sig":
-        pass  # Operator/Developer testing bypass
-    else:
-        payload = f"{data.player_id}:{data.minutes_played}:{data.timestamp}:{data.nonce}".encode('utf-8')
-        expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
-
-        if not hmac.compare_digest(expected_sig, data.signature):
-            BLACKHOLE_IP_POOL.add(client_ip)
-            trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`). IP Blackholed.")
-            raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
-
-    PROCESSED_NONCES.add(data.nonce)
-
-    # --- PROCESS EARN CALCULATIONS & TOKENOMICS BURNS ---
-    player = get_or_create_player(db, data.player_id)
-    hours_added = data.minutes_played / 60.0
-    player.total_hours_played += hours_added
-
-    base_rate = 10.0
-    multiplier = 1.0
-
-    if player.total_hours_played <= 24.0:
-        multiplier += 0.10
-
-    gross_earned_nex = (base_rate * hours_added) * multiplier
-    
-    # 1% Dynamic Base-Fee Burn
-    burned_fee = gross_earned_nex * 0.01
-    net_earned_nex = gross_earned_nex - burned_fee
-
-    player.spendable_nex += net_earned_nex
-    player.total_nex_earned += net_earned_nex
-
-    # Audit Log Entry with Safety Fallback
-    try:
-        audit_entry = AuditLogModel(
-            action_type="TELEMETRY_MINT",
-            player_id=player.player_id,
-            amount_nex=net_earned_nex,
-            details=f"Earned {net_earned_nex:.2f} NEX ({burned_fee:.2f} NEX burned) for {data.minutes_played}m play time"
-        )
-        db.add(audit_entry)
-        db.commit()
-    except Exception:
-        db.rollback()
-        db.commit()
-
-    return {
-        "status": "success",
-        "player_id": player.player_id,
-        "nex_earned": round(net_earned_nex, 4),
-        "nex_burned": round(burned_fee, 4),
-        "total_spendable_nex": round(player.spendable_nex, 4),
-        "active_multiplier": round(multiplier, 2),
-        "nametag_style": calculate_nametag_style(player, db)
-    }
-
-@app.get("/api/v1/player/{player_id}")
-def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    player = get_or_create_player(db, player_id)
-    return {
-        "player_id": player.player_id,
-        "spendable_nex": round(player.spendable_nex, 4),
-        "total_nex_earned": round(player.total_nex_earned, 4),
-        "total_hours_played": round(player.total_hours_played, 2),
-        "prestige_level": player.prestige_level,
-        "nametag_style": calculate_nametag_style(player, db)
-    }
-
-@app.post("/api/v1/store/buy")
-def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_db)):
-    player = get_or_create_player(db, req.player_id)
-    item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id, StoreCatalogModel.is_active == True).first()
-
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found in catalog.")
-
-    if player.spendable_nex < item.price_nex:
-        raise HTTPException(status_code=400, detail=f"Insufficient {TOKEN_TICKER} balance.")
-
-    player.spendable_nex -= item.price_nex
-
-    # Execute 75/25 Developer Split
-    dev_cut = item.price_nex * 0.75
-    platform_cut = item.price_nex * 0.25
-
-    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == item.developer_id).first()
-    if developer:
-        developer.earned_nex_balance += dev_cut
-
-    instance_id = f"inst_{item.item_id}_{int(time.time())}_{player.player_id[:4]}"
-    inventory_item = PlayerInventoryModel(
-        instance_id=instance_id,
-        player_id=player.player_id,
-        item_id=item.item_id,
-        item_type="Standard",
-        acquired_via="Store_Purchase"
-    )
-    db.add(inventory_item)
-
-    audit_entry = AuditLogModel(
-        action_type="STORE_PURCHASE",
-        player_id=player.player_id,
-        amount_nex=item.price_nex,
-        details=f"Purchased '{item.name}'. Dev Cut: {dev_cut:.2f} NEX, Treasury Cut: {platform_cut:.2f} NEX"
-    )
-    db.add(audit_entry)
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Successfully purchased {item.name}.",
-        "instance_id": instance_id,
-        "remaining_spendable_nex": round(player.spendable_nex, 4)
-    }
-
-@app.post("/api/v1/developer/catalog/add", tags=["Developer Store"])
-def add_developer_store_item(req: DeveloperItemCreateRequest, db: Session = Depends(get_db)):
-    """Allows game developers to publish new items/NFTs directly to the central bank store catalog."""
-    existing_item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id).first()
-    if existing_item:
-        raise HTTPException(status_code=400, detail=f"Item ID '{req.item_id}' is already registered in the catalog.")
-    
-    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == req.developer_id).first()
-    if not developer:
-        developer = DeveloperModel(
-            developer_id=req.developer_id,
-            developer_name=f"Studio {req.developer_id}",
-            earned_nex_balance=0.0
-        )
-        db.add(developer)
-
-    new_item = StoreCatalogModel(
-        item_id=req.item_id,
-        name=req.name,
-        description=req.description,
-        price_nex=req.price_nex,
-        developer_id=req.developer_id,
-        multiplier_boost=req.multiplier_boost,
-        is_active=True
-    )
-    db.add(new_item)
-    db.commit()
-    db.refresh(new_item)
-
-    return {
-        "status": "success",
-        "message": f"Item '{req.name}' successfully published by '{req.developer_id}'.",
-        "item_id": new_item.item_id,
-        "price_nex": new_item.price_nex
-    }
-
-@app.get("/api/v1/developer/{developer_id}/catalog", tags=["Developer Store"])
-def get_developer_catalog(developer_id: str, db: Session = Depends(get_db)):
-    """Retrieves all active items registered by a specific game developer."""
-    items = db.query(StoreCatalogModel).filter(
-        StoreCatalogModel.developer_id == developer_id,
-        StoreCatalogModel.is_active == True
-    ).all()
-    
-    return {
-        "developer_id": developer_id,
-        "published_items_count": len(items),
-        "catalog": [
-            {
-                "item_id": item.item_id,
-                "name": item.name,
-                "description": item.description,
-                "price_nex": item.price_nex,
-                "multiplier_boost": item.multiplier_boost
-            } for item in items
-        ]
-    }
-
-# =====================================================================
-# 8. MOBILE REMOTE CONTROLS & ADMIN ENDPOINTS
-# =====================================================================
-@app.post("/api/v1/admin/toggle-pause")
-def toggle_minting_pause(x_admin_key: str = Header(...)):
-    """Remote Emergency Kill Switch: Trigger from your phone to pause/unpause NEX minting."""
-    global IS_MINTING_PAUSED
-    if x_admin_key != ADMIN_SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized operator key.")
-
-    IS_MINTING_PAUSED = not IS_MINTING_PAUSED
-    status_text = "PAUSED" if IS_MINTING_PAUSED else "RESUMED"
-    trigger_discord_alert(f"Operator manually **{status_text}** central bank minting.")
-
-    return {
-        "status": "success",
-        "is_minting_paused": IS_MINTING_PAUSED,
-        "message": f"Central Bank minting has been {status_text}."
-    }
-
-@app.post("/api/v1/admin/gift-item")
-def operator_gift_item(req: OperatorGiftRequest, x_admin_key: str = Header(...), db: Session = Depends(get_db)):
-    if x_admin_key != ADMIN_SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized operator key.")
-
-    player = get_or_create_player(db, req.target_player_id)
-    instance_id = f"gift_{req.item_id}_{int(time.time())}_{player.player_id[:4]}"
-    inventory_entry = PlayerInventoryModel(
-        instance_id=instance_id,
-        player_id=player.player_id,
-        item_id=req.item_id,
-        item_type=req.item_type,
-        acquired_via=req.reason
-    )
-    db.add(inventory_entry)
-    db.commit()
-
-    return {
-        "status": "success",
-        "message": f"Gifted item '{req.item_id}' to player '{player.player_id}'.",
-        "instance_id": instance_id
-    }
-
-@app.get("/api/v1/admin/summary")
-def get_admin_summary(db: Session = Depends(get_db)):
-    players = db.query(PlayerModel).all()
-    developers = db.query(DeveloperModel).all()
-
-    return {
-        "network_token": TOKEN_NAME,
-        "ticker": TOKEN_TICKER,
-        "is_minting_paused": IS_MINTING_PAUSED,
-        "total_registered_players": len(players),
-        "total_circulating_nex": sum(p.spendable_nex for p in players),
-        "total_lifetime_nex_minted": sum(p.total_nex_earned for p in players),
-        "total_developer_unclaimed_nex": sum(d.earned_nex_balance for d in developers),
-        "trapped_bot_ips_count": len(BLACKHOLE_IP_POOL),
-        "trapped_bot_ips": list(BLACKHOLE_IP_POOL)
-    }
+        logging.error(f"Claim transfer error: {e}")
+        await interaction.followup.send(f"❌ **Claim Error:** Hedera transfer rejected with error: `{e}`", ephemeral=True)
+
+# -------------------------------------------------------------------
+# Run Bot Application
+# -------------------------------------------------------------------
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
