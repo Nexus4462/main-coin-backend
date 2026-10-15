@@ -415,10 +415,13 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/player/{player_id}/claim")
 async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
+    """Executes HTS token transfer safely in a background thread to prevent thread freezing."""
+    # 1. Fetch player balance
     player = get_or_create_player(db, player_id)
     if player.spendable_nex <= 0:
         raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
 
+    # 2. Fetch linked Hedera wallet
     connected = db.query(ConnectedAccountModel).filter(
         ConnectedAccountModel.player_id == player_id,
         ConnectedAccountModel.platform_name == "hedera_wallet"
@@ -432,6 +435,7 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
 
     claim_amount = player.spendable_nex
 
+    # 3. Offload synchronous Hedera SDK call to an async thread pool with a 15s timeout
     try:
         from hedera_relayer import transfer_nex_tokens
         
@@ -442,9 +446,13 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Hedera Testnet transaction timed out. Please try again.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Relayer Error: {str(e)}")
+        # RETURN EXACT EXCEPTION DETAILS TO DISCORD FOR DIAGNOSTICS
+        import traceback
+        error_msg = f"Relayer Exception: {str(e)} | Details: {traceback.format_exc()[:150]}"
+        raise HTTPException(status_code=400, detail=error_msg)
 
-    if str(status) == "SUCCESS":
+    # 4. Clear DB balance on SUCCESS
+    if str(status) in ["SUCCESS", "Status.SUCCESS"]:
         player.spendable_nex = 0.0
         
         audit_entry = AuditLogModel(
@@ -463,7 +471,7 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
         }
     else:
         raise HTTPException(
-            status_code=500, 
+            status_code=400, 
             detail=f"Hedera transfer rejected with status: {status}"
         )
 
