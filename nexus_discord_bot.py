@@ -90,7 +90,12 @@ async def claim_monthly(interaction: discord.Interaction):
                 f"View on HashScan: https://hashscan.io/testnet/account/{wallet}"
             )
         else:
-            err_detail = res.json().get("detail", "Transfer failed.")
+            # Safely attempt to parse JSON error, fallback to raw text if HTML
+            try:
+                err_detail = res.json().get("detail", res.text)
+            except Exception:
+                err_detail = f"Server returned status {res.status_code}: {res.text[:200]}"
+                
             await interaction.followup.send(f"❌ **Claim Error:** {err_detail}")
 
     except httpx.TimeoutException:

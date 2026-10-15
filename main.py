@@ -415,13 +415,10 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/player/{player_id}/claim")
 async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
-    """Executes HTS token transfer safely in a background thread to prevent thread freezing."""
-    # 1. Fetch player balance from nexus-db
     player = get_or_create_player(db, player_id)
     if player.spendable_nex <= 0:
         raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
 
-    # 2. Fetch linked Hedera wallet
     connected = db.query(ConnectedAccountModel).filter(
         ConnectedAccountModel.player_id == player_id,
         ConnectedAccountModel.platform_name == "hedera_wallet"
@@ -435,7 +432,6 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
 
     claim_amount = player.spendable_nex
 
-    # 3. Offload synchronous Hedera SDK call to an async thread pool with a 15s timeout
     try:
         from hedera_relayer import transfer_nex_tokens
         
@@ -448,7 +444,6 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Relayer Error: {str(e)}")
 
-    # 4. Clear DB balance on SUCCESS
     if str(status) == "SUCCESS":
         player.spendable_nex = 0.0
         
