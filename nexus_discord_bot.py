@@ -95,38 +95,32 @@ async def claim_monthly(interaction: discord.Interaction):
 
 
 # --- PRIVACY COMMAND: Link Account ---
-@bot.tree.command(name="link", description="Link your game account using a generated code")
-@app_commands.describe(code="The link code generated from the backend portal")
-async def link(interaction: discord.Interaction, code: str):
+@bot.tree.command(name="claim-monthly", description="Claim spendable NEX balance on-chain to your linked Hedera wallet")
+async def claim_monthly(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
+    player_id = "salina_pilot_01"
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{BACKEND_URL}/api/v1/link/verify",
-                json={
-                    "discord_id": str(interaction.user.id),
-                    "discord_tag": str(interaction.user),
-                    "link_code": code
-                }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.post(f"{BACKEND_URL}/api/v1/player/{player_id}/claim")
+
+        if res.status_code == 200:
+            data = res.json()
+            amount = data.get("amount")
+            wallet = data.get("wallet")
+            await interaction.followup.send(
+                f"🎉 **Claim Successful!**\n"
+                f"Transferred **{amount} NEX** to `{wallet}`!\n"
+                f"View on HashScan: https://hashscan.io/testnet/account/{wallet}"
             )
-            data = response.json()
-            
-            if response.status_code == 200 and data.get("status") == "success":
-                player_id = data.get("player_id", "Unknown")
-                await interaction.followup.send(
-                    f"✅ **Account Linked Successfully!**\n"
-                    f"• **Player ID:** `{player_id}`\n"
-                    f"• **Discord User:** {interaction.user.mention}\n"
-                    f"• **Rank:** `NODE`",
-                    ephemeral=True
-                )
-            else:
-                detail = data.get("detail", "Invalid or expired link code.")
-                await interaction.followup.send(f"❌ **Link Failed:** {detail}", ephemeral=True)
-                
+        else:
+            err_detail = res.json().get("detail", "Transfer failed.")
+            await interaction.followup.send(f"❌ **Claim Error:** {err_detail}")
+
+    except httpx.TimeoutException:
+        await interaction.followup.send("⏰ **Request Timed Out:** The backend or Hedera Testnet node took too long to respond.")
     except Exception as e:
-        await interaction.followup.send(f"❌ **Connection Error:** {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
 
 # Place alongside existing slash commands in bot.py
 @bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")

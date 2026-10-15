@@ -6,6 +6,7 @@ import requests
 import random
 import string
 import re
+import asyncio
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
@@ -413,14 +414,14 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
     }
 
 @app.post("/api/v1/player/{player_id}/claim")
-def process_player_claim(player_id: str, db: Session = Depends(get_db)):
-    """Executes HTS token transfer on Hedera for a player's spendable balance and clears off-chain DB balance."""
-    # 1. Fetch player balance
+async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
+    """Executes HTS token transfer safely in a background thread to prevent thread freezing."""
+    # 1. Fetch player balance from nexus-db
     player = get_or_create_player(db, player_id)
     if player.spendable_nex <= 0:
         raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
 
-    # 2. Fetch linked Hedera wallet from connected_accounts table
+    # 2. Fetch linked Hedera wallet
     connected = db.query(ConnectedAccountModel).filter(
         ConnectedAccountModel.player_id == player_id,
         ConnectedAccountModel.platform_name == "hedera_wallet"
@@ -434,11 +435,20 @@ def process_player_claim(player_id: str, db: Session = Depends(get_db)):
 
     claim_amount = player.spendable_nex
 
-    # 3. Execute HTS transfer via hedera_relayer
-    from hedera_relayer import transfer_nex_tokens
-    status = transfer_nex_tokens(connected.external_account_id, claim_amount)
+    # 3. Offload synchronous Hedera SDK call to an async thread pool with a 15s timeout
+    try:
+        from hedera_relayer import transfer_nex_tokens
+        
+        status = await asyncio.wait_for(
+            asyncio.to_thread(transfer_nex_tokens, connected.external_account_id, claim_amount),
+            timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Hedera Testnet transaction timed out. Please try again.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Relayer Error: {str(e)}")
 
-    # 4. On SUCCESS, zero out off-chain balance and log audit record
+    # 4. Clear DB balance on SUCCESS
     if str(status) == "SUCCESS":
         player.spendable_nex = 0.0
         
@@ -459,7 +469,7 @@ def process_player_claim(player_id: str, db: Session = Depends(get_db)):
     else:
         raise HTTPException(
             status_code=500, 
-            detail="Hedera on-chain token transfer failed. Ensure wallet has associated NEX Token 0.0.10991235."
+            detail=f"Hedera transfer rejected with status: {status}"
         )
 
 # =====================================================================
