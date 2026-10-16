@@ -21,7 +21,7 @@ OPERATOR_ID = os.getenv("OPERATOR_ID", "0.0.10770972")
 OPERATOR_KEY = os.getenv("OPERATOR_KEY", "")
 MIRROR_NODE = os.getenv("MIRROR_NODE_URL", "https://testnet.mirrornode.hedera.com")
 HMAC_SECRET = os.getenv("HMAC_SECRET", "super_secret_game_server_key_123")
-NEX_TOKEN_ID = os.getenv("NEX_TOKEN_ID", "0.0.10770973")
+NEX_TOKEN_ID = os.getenv("NEX_TOKEN_ID", "0.0.10991235")
 
 # =====================================================================
 # 1. SQLITE DATABASE SETUP
