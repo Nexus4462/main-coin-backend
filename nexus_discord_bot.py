@@ -92,6 +92,10 @@ async def claim_monthly(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
 
+
+
+
+
 # --- PRIVACY COMMAND: Link Account ---
 @bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")
 @app_commands.describe(account_id="Your Hedera Account ID (e.g. 0.0.10770972)")
@@ -108,4 +112,15 @@ async def link_wallet(interaction: discord.Interaction, account_id: str):
 
         if res.status_code == 200:
             await interaction.followup.send(
-                f"🔗 **Wallet
+                f"🔗 **Wallet Linked Successfully!**\n"
+                f"Player: `{player_id}`\n"
+                f"Hedera Account: `{account_id}`\n\n"
+                f"Make sure account `{account_id}` has associated Token `0.0.10991235` in HashPack or Kabila!"
+            )
+        else:
+            err_msg = res.json().get("detail", "Failed to link wallet.")
+            await interaction.followup.send(f"❌ **Error:** {err_msg}")
+    except httpx.TimeoutException:
+        await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
