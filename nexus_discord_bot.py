@@ -92,10 +92,6 @@ async def claim_monthly(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
 
-
-
-
-
 # --- PRIVACY COMMAND: Link Account ---
 @bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")
 @app_commands.describe(account_id="Your Hedera Account ID (e.g. 0.0.10770972)")
@@ -124,3 +120,20 @@ async def link_wallet(interaction: discord.Interaction, account_id: str):
         await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.")
     except Exception as e:
         await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
+
+@bot.event
+async def on_ready():
+    print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} slash commands.")
+    except Exception as e:
+        print(f"❌ Failed to sync slash commands: {e}")
+
+# --- FASTAPI STARTUP EVENT (LAUNCHES BOT) ---
+@app.on_event("startup")
+async def startup_event():
+    if DISCORD_TOKEN:
+        asyncio.create_task(bot.start(DISCORD_TOKEN))
+    else:
+        print("⚠️ DISCORD_BOT_TOKEN is missing from environment variables!")
