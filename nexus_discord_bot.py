@@ -1,33 +1,23 @@
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
 import httpx
 from dotenv import load_dotenv
+from fastapi import FastAPI
 
 # Load local environment variables from .env file
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
 
-# --- HEALTH CHECK SERVER FOR RENDER PORT BINDING ---
-class HealthCheckerHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Nexus Discord Bot is running.")
+# --- FASTAPI HEALTH CHECK FOR RENDER PORT BINDING ---
+app = FastAPI()
 
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-
-def run_health_check_server():
-    port = int(os.getenv("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckerHandler)
-    server.serve_forever()
+@app.get("/")
+async def health_check():
+    return {"status": "NEXUS Core Online", "bot_active": True}
 
 # ----------------------------------------------------
 
@@ -90,7 +80,6 @@ async def claim_monthly(interaction: discord.Interaction):
                 f"View on HashScan: https://hashscan.io/testnet/account/{wallet}"
             )
         else:
-            # Safely attempt to parse JSON error, fallback to raw text if HTML
             try:
                 err_detail = res.json().get("detail", res.text)
             except Exception:
@@ -119,32 +108,4 @@ async def link_wallet(interaction: discord.Interaction, account_id: str):
 
         if res.status_code == 200:
             await interaction.followup.send(
-                f"🔗 **Wallet Linked Successfully!**\n"
-                f"Player: `{player_id}`\n"
-                f"Hedera Account: `{account_id}`\n\n"
-                f"Make sure account `{account_id}` has associated Token `0.0.10991235` in HashPack or Kabila!"
-            )
-        else:
-            err_msg = res.json().get("detail", "Failed to link wallet.")
-            await interaction.followup.send(f"❌ **Error:** {err_msg}")
-    except httpx.TimeoutException:
-        await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ **Bot Error:** {str(e)}")
-
-@bot.event
-async def on_ready():
-    print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(f"❌ Failed to sync slash commands: {e}")
-
-if __name__ == "__main__":
-    if DISCORD_TOKEN:
-        # Start HTTP server on background thread for Render health check
-        threading.Thread(target=run_health_check_server, daemon=True).start()
-        bot.run(DISCORD_TOKEN)
-    else:
-        print("⚠️ DISCORD_BOT_TOKEN is missing from environment variables!")
+                f"🔗 **Wallet
