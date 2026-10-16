@@ -21,7 +21,7 @@ OPERATOR_ID = os.getenv("OPERATOR_ID", "0.0.10770972")
 OPERATOR_KEY = os.getenv("OPERATOR_KEY", "")
 MIRROR_NODE = os.getenv("MIRROR_NODE_URL", "https://testnet.mirrornode.hedera.com")
 HMAC_SECRET = os.getenv("HMAC_SECRET", "super_secret_game_server_key_123")
-TOKEN_ID = os.getenv("TOKEN_ID", "0.0.10770973")
+NEX_TOKEN_ID = os.getenv("NEX_TOKEN_ID", "0.0.10770973")
 
 # =====================================================================
 # 1. SQLITE DATABASE SETUP
@@ -52,27 +52,27 @@ def get_db():
 # =====================================================================
 # 2. HEDERA ON-CHAIN RELAYER & BRIDGE UTILITIES
 # =====================================================================
-def burn_tokens_on_hedera(token_id: str, amount_to_burn: float) -> str:
+def burn_tokens_on_hedera(NEX_TOKEN_ID: str, amount_to_burn: float) -> str:
     """Submits a token burn to the Hedera consensus network."""
     smallest_unit_amount = int(amount_to_burn * 100_000_000)
     timestamp_str = str(time.time()).replace('.', '')[:10]
     tx_id = f"{OPERATOR_ID}@{timestamp_str}.000000000"
     
     print(f"--- [HEDERA ON-CHAIN] TokenBurnTransaction ---")
-    print(f"Token ID: {token_id}")
+    print(f"Token ID: {NEX_TOKEN_ID}")
     print(f"Amount Burned: {amount_to_burn:,} MAIN ({smallest_unit_amount:,} units)")
     print(f"Treasury Payer: {OPERATOR_ID}")
     print(f"Tx Hash: {tx_id}")
     return tx_id
 
-def transfer_dev_revenue_on_hedera(token_id: str, dev_account_id: str, dev_amount: float) -> str:
+def transfer_dev_revenue_on_hedera(NEX_TOKEN_ID: str, dev_account_id: str, dev_amount: float) -> str:
     """Routes 75% store revenue to the Developer Treasury on-chain."""
     smallest_unit_amount = int(dev_amount * 100_000_000)
     timestamp_str = str(time.time()).replace('.', '')[:10]
     tx_id = f"{OPERATOR_ID}@{timestamp_str}.000000001"
     
     print(f"--- [HEDERA ON-CHAIN] TransferTransaction ---")
-    print(f"Token ID: {token_id}")
+    print(f"Token ID: {NEX_TOKEN_ID}")
     print(f"Routed to Developer ({dev_account_id}): +{dev_amount:,} MAIN")
     print(f"Tx Hash: {tx_id}")
     return tx_id
@@ -141,7 +141,7 @@ def read_root():
         "database": "SQLite Persistence",
         "hedera_network": "Testnet",
         "operator_id": OPERATOR_ID,
-        "hts_token_id": TOKEN_ID
+        "hts_NEX_TOKEN_ID": NEX_TOKEN_ID
     }
 
 @app.post("/api/v1/telemetry")
@@ -201,7 +201,7 @@ def buy_store_item(purchase: StorePurchaseRequest, db: Session = Depends(get_db)
     db.commit()
     db.refresh(player)
 
-    tx_id = transfer_dev_revenue_on_hedera(TOKEN_ID, OPERATOR_ID, dev_share)
+    tx_id = transfer_dev_revenue_on_hedera(NEX_TOKEN_ID, OPERATOR_ID, dev_share)
 
     return {
         "status": "success",
@@ -239,7 +239,7 @@ def execute_prestige(req: PrestigeRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(player)
 
-    tx_id = burn_tokens_on_hedera(TOKEN_ID, burned_amount)
+    tx_id = burn_tokens_on_hedera(NEX_TOKEN_ID, burned_amount)
 
     return {
         "status": "success",

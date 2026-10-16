@@ -8,7 +8,7 @@ from hiero_sdk_python import (
     TokenId,
 )
 
-TOKEN_ID_STR = os.getenv("NEX_TOKEN_ID", "0.0.10991235")
+NEX_TOKEN_ID_STR = os.getenv("NEX_NEX_TOKEN_ID", "0.0.10991235")
 
 def get_hedera_client():
     """Initializes and returns the Hedera SDK Client and credentials safely without calling exit()."""
@@ -28,14 +28,14 @@ def get_hedera_client():
 def mint_nex_tokens(amount: float):
     """Mints new NEX tokens to the treasury account on Hedera Testnet"""
     client, operator_id, operator_key = get_hedera_client()
-    token_id = TokenId.from_string(TOKEN_ID_STR)
+    NEX_TOKEN_ID = TokenId.from_string(NEX_TOKEN_ID_STR)
     base_units = int(amount * 10000)  # 4 decimals
 
-    print(f"🔨 Minting {amount} NEX ({base_units} base units) for Token {token_id}...")
+    print(f"🔨 Minting {amount} NEX ({base_units} base units) for Token {NEX_TOKEN_ID}...")
 
     transaction = (
         TokenMintTransaction()
-        .set_token_id(token_id)
+        .set_NEX_TOKEN_ID(NEX_TOKEN_ID)
         .set_amount(base_units)
         .freeze_with(client)
     )
@@ -47,13 +47,13 @@ def mint_nex_tokens(amount: float):
     print(f"\n✅ Mint Successful!")
     print(f"   Status: {receipt.status}")
     print(f"   New Total Supply: {new_total} NEX")
-    print(f"   View on Explorer: https://hashscan.io/testnet/token/{token_id}")
+    print(f"   View on Explorer: https://hashscan.io/testnet/token/{NEX_TOKEN_ID}")
     return receipt.status
 
 def transfer_nex_tokens(target_account_id: str, amount: float):
     """Transfers NEX tokens from Treasury to a targeted Hedera account ID"""
     client, operator_id, operator_key = get_hedera_client()
-    token_id = TokenId.from_string(TOKEN_ID_STR)
+    NEX_TOKEN_ID = TokenId.from_string(NEX_TOKEN_ID_STR)
     recipient = AccountId.from_string(target_account_id)
     base_units = int(amount * 10000)
 
@@ -61,8 +61,8 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
 
     transaction = (
         TransferTransaction()
-        .add_token_transfer(token_id, operator_id, -base_units)
-        .add_token_transfer(token_id, recipient, base_units)
+        .add_token_transfer(NEX_TOKEN_ID, operator_id, -base_units)
+        .add_token_transfer(NEX_TOKEN_ID, recipient, base_units)
         .freeze_with(client)
     )
 

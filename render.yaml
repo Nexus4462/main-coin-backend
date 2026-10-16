@@ -14,7 +14,7 @@ services:
         value: https://testnet.mirrornode.hedera.com
       - key: HMAC_SECRET
         sync: false
-      - key: TOKEN_ID
+      - key: NEX_TOKEN_ID
         sync: false
     disk:
       name: sqlite-data
