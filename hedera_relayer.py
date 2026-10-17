@@ -98,3 +98,7 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
 
     print(f"✅ Transfer Successful! Status: {receipt.status}")
     return receipt.status
+
+if __name__ == "__main__":
+    # Mint 1,000,000 NEX tokens directly into the Treasury account (0.0.10770972)
+    mint_nex_tokens(1000000.0)
