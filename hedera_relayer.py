@@ -93,4 +93,27 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
     """Transfers NEX tokens from Treasury to a targeted Hedera account ID."""
     client, operator_id, operator_key = get_hedera_client()
     nex_token_id_str = get_token_id_str()
-    NEX_TOKEN_ID = TokenId
+    NEX_TOKEN_ID = TokenId.from_string(nex_token_id_str)
+    recipient = AccountId.from_string(target_account_id)
+    base_units = int(amount * 10000)
+
+    print(f"💸 Transferring {amount} NEX to {target_account_id} on Hedera Testnet...")
+
+    transaction = (
+        TransferTransaction()
+        .add_token_transfer(NEX_TOKEN_ID, operator_id, -base_units)
+        .add_token_transfer(NEX_TOKEN_ID, recipient, base_units)
+        .freeze_with(client)
+    )
+
+    signed_tx = transaction.sign(operator_key)
+    receipt = signed_tx.execute(client)
+
+    # Extract integer status code or fallback to string name for bot compatibility
+    status_code = getattr(receipt.status, "value", receipt.status)
+    print(f"✅ Transfer Attempt Complete! Status: {status_code}")
+    
+    # Return explicit success indicator or status code
+    if str(receipt.status) in ["SUCCESS", "Status.SUCCESS", "22"]:
+        return 22
+    return status_code
