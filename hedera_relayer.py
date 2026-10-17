@@ -8,18 +8,43 @@ from hiero_sdk_python import (
     TokenId,
 )
 
-NEX_TOKEN_ID_STR = os.getenv("NEX_NEX_TOKEN_ID", "0.0.10991235")
+def get_token_id_str():
+    """Fallback to check multiple potential environment variable keys for Token ID."""
+    return (
+        os.getenv("TOKEN_ID")
+        or os.getenv("NEX_TOKEN_ID")
+        or os.getenv("NEX_NEX_TOKEN_ID")
+        or "0.0.10991235"
+    ).strip().strip('"').strip("'")
 
 def get_hedera_client():
     """Initializes and returns the Hedera SDK Client and credentials safely without calling exit()."""
-    operator_id_str = os.getenv("HEDERA_OPERATOR_ID")
-    operator_key_str = os.getenv("HEDERA_OPERATOR_KEY")
+    # Fallback to handle both OPERATOR_ID and HEDERA_OPERATOR_ID naming conventions
+    operator_id_str = (
+        os.getenv("OPERATOR_ID") 
+        or os.getenv("HEDERA_OPERATOR_ID", "")
+    ).strip().strip('"').strip("'")
+    
+    raw_key = (
+        os.getenv("OPERATOR_KEY") 
+        or os.getenv("HEDERA_OPERATOR_KEY", "")
+    ).strip().strip('"').strip("'")
 
-    if not operator_id_str or not operator_key_str:
-        raise RuntimeError("CRITICAL ERROR: HEDERA_OPERATOR_ID or HEDERA_OPERATOR_KEY environment variables are missing on Render!")
+    if not operator_id_str or not raw_key:
+        raise RuntimeError(
+            "CRITICAL ERROR: OPERATOR_ID or OPERATOR_KEY environment variables are missing on Render!"
+        )
 
     operator_id = AccountId.from_string(operator_id_str)
-    operator_key = PrivateKey.from_string(operator_key_str)
+
+    # Force ECDSA SECP256K1 key parsing for account 0.0.10770972
+    try:
+        operator_key = PrivateKey.from_string_ecdsa(raw_key)
+    except Exception:
+        try:
+            operator_key = PrivateKey.from_string(raw_key)
+        except Exception:
+            operator_key = PrivateKey.from_string_ed25519(raw_key)
 
     client = Client.for_testnet()
     client.set_operator(operator_id, operator_key)
@@ -28,22 +53,24 @@ def get_hedera_client():
 def mint_nex_tokens(amount: float):
     """Mints new NEX tokens to the treasury account on Hedera Testnet"""
     client, operator_id, operator_key = get_hedera_client()
-    NEX_TOKEN_ID = TokenId.from_string(NEX_TOKEN_ID_STR)
+    nex_token_id_str = get_token_id_str()
+    NEX_TOKEN_ID = TokenId.from_string(nex_token_id_str)
     base_units = int(amount * 10000)  # 4 decimals
 
     print(f"🔨 Minting {amount} NEX ({base_units} base units) for Token {NEX_TOKEN_ID}...")
 
     transaction = (
         TokenMintTransaction()
-        .set_NEX_TOKEN_ID(NEX_TOKEN_ID)
+        .set_token_id(NEX_TOKEN_ID)
         .set_amount(base_units)
         .freeze_with(client)
     )
 
     signed_tx = transaction.sign(operator_key)
-    receipt = signed_tx.execute(client)
+    response = signed_tx.execute(client)
+    receipt = response.get_receipt(client)
 
-    new_total = receipt.new_total_supply / 10000
+    new_total = receipt.new_total_supply / 10000 if receipt.new_total_supply else 0.0
     print(f"\n✅ Mint Successful!")
     print(f"   Status: {receipt.status}")
     print(f"   New Total Supply: {new_total} NEX")
@@ -53,7 +80,8 @@ def mint_nex_tokens(amount: float):
 def transfer_nex_tokens(target_account_id: str, amount: float):
     """Transfers NEX tokens from Treasury to a targeted Hedera account ID"""
     client, operator_id, operator_key = get_hedera_client()
-    NEX_TOKEN_ID = TokenId.from_string(NEX_TOKEN_ID_STR)
+    nex_token_id_str = get_token_id_str()
+    NEX_TOKEN_ID = TokenId.from_string(nex_token_id_str)
     recipient = AccountId.from_string(target_account_id)
     base_units = int(amount * 10000)
 
@@ -67,7 +95,8 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
     )
 
     signed_tx = transaction.sign(operator_key)
-    receipt = signed_tx.execute(client)
+    response = signed_tx.execute(client)
+    receipt = response.get_receipt(client)
 
     print(f"✅ Transfer Successful! Status: {receipt.status}")
     return receipt.status
