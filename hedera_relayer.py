@@ -8,7 +8,7 @@ from hiero_sdk_python import (
     TokenId,
 )
 
-def get_token_id_str():
+def get_token_id_str() -> str:
     """Fallback to check multiple potential environment variable keys for Token ID."""
     token_id = (
         os.getenv("TOKEN_ID")
@@ -16,16 +16,15 @@ def get_token_id_str():
         or os.getenv("NEX_NEX_TOKEN_ID")
         or "0.0.10991235"
     ).strip().strip('"').strip("'")
-    
-    # Safety check: Prevent player wallet ID from being used as the Token ID
+
+    # Safety check: Prevent player wallet ID from being evaluated as the Token ID
     if token_id == "0.0.11035514":
         return "0.0.10991235"
-        
+
     return token_id
 
 def get_hedera_client():
     """Initializes and returns the Hedera SDK Client and credentials safely."""
-    # Load .env explicitly if python-dotenv is installed
     try:
         from dotenv import load_dotenv
         load_dotenv(override=True)
@@ -42,26 +41,16 @@ def get_hedera_client():
         or os.getenv("HEDERA_OPERATOR_KEY", "")
     ).strip().strip('"').strip("'")
 
-    print(f"🔍 DEBUG: Loaded OPERATOR_ID from env = '{operator_id_str}'")
+    # Safety Override: Force Treasury Account ID if player wallet or empty string is loaded
+    if not operator_id_str or operator_id_str == "0.0.11035514":
+        operator_id_str = "0.0.10770972"
 
-    if not operator_id_str or not raw_key:
-        raise RuntimeError("CRITICAL ERROR: OPERATOR_ID or OPERATOR_KEY environment variables are missing!")
+    if not raw_key:
+        raise RuntimeError("CRITICAL ERROR: OPERATOR_KEY environment variable is missing!")
 
     operator_id = AccountId.from_string(operator_id_str)
 
-    try:
-        operator_key = PrivateKey.from_string_ecdsa(raw_key)
-    except Exception:
-        try:
-            operator_key = PrivateKey.from_string(raw_key)
-        except Exception:
-            operator_key = PrivateKey.from_string_ed25519(raw_key)
-
-    client = Client.for_testnet()
-    client.set_operator(operator_id, operator_key)
-    return client, operator_id, operator_key
-
-    # Force ECDSA SECP256K1 key parsing for account 0.0.10770972
+    # Force ECDSA SECP256K1 key parsing for Treasury account 0.0.10770972
     try:
         operator_key = PrivateKey.from_string_ecdsa(raw_key)
     except Exception:
@@ -75,11 +64,11 @@ def get_hedera_client():
     return client, operator_id, operator_key
 
 def mint_nex_tokens(amount: float):
-    """Mints new NEX tokens to the treasury account on Hedera Testnet"""
+    """Mints new NEX tokens to the treasury account on Hedera Testnet."""
     client, operator_id, operator_key = get_hedera_client()
     nex_token_id_str = get_token_id_str()
     NEX_TOKEN_ID = TokenId.from_string(nex_token_id_str)
-    base_units = int(amount * 10000)  # 4 decimals
+    base_units = int(amount * 10000)  # 4 decimal places
 
     print(f"🔨 Minting {amount} NEX ({base_units} base units) for Token {NEX_TOKEN_ID}...")
 
@@ -91,7 +80,7 @@ def mint_nex_tokens(amount: float):
     )
 
     signed_tx = transaction.sign(operator_key)
-    receipt = signed_tx.execute(client)  # Returns TransactionReceipt directly
+    receipt = signed_tx.execute(client)
 
     new_total = getattr(receipt, "new_total_supply", 0) / 10000
     print(f"\n✅ Mint Successful!")
@@ -101,28 +90,7 @@ def mint_nex_tokens(amount: float):
     return receipt.status
 
 def transfer_nex_tokens(target_account_id: str, amount: float):
-    """Transfers NEX tokens from Treasury to a targeted Hedera account ID"""
+    """Transfers NEX tokens from Treasury to a targeted Hedera account ID."""
     client, operator_id, operator_key = get_hedera_client()
     nex_token_id_str = get_token_id_str()
-    NEX_TOKEN_ID = TokenId.from_string(nex_token_id_str)
-    recipient = AccountId.from_string(target_account_id)
-    base_units = int(amount * 10000)
-
-    print(f"💸 Transferring {amount} NEX to {target_account_id} on Hedera Testnet...")
-
-    transaction = (
-        TransferTransaction()
-        .add_token_transfer(NEX_TOKEN_ID, operator_id, -base_units)
-        .add_token_transfer(NEX_TOKEN_ID, recipient, base_units)
-        .freeze_with(client)
-    )
-
-    signed_tx = transaction.sign(operator_key)
-    receipt = signed_tx.execute(client)  # Returns TransactionReceipt directly
-
-    print(f"✅ Transfer Successful! Status: {receipt.status}")
-    return receipt.status
-
-if __name__ == "__main__":
-    # Mint 1,000,000 NEX tokens directly into the Treasury account (0.0.10770972)
-    mint_nex_tokens(1000000.0)
+    NEX_TOKEN_ID = TokenId
