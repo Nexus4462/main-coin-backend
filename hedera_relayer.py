@@ -67,10 +67,9 @@ def mint_nex_tokens(amount: float):
     )
 
     signed_tx = transaction.sign(operator_key)
-    response = signed_tx.execute(client)
-    receipt = response.get_receipt(client)
+    receipt = signed_tx.execute(client)  # Returns TransactionReceipt directly
 
-    new_total = receipt.new_total_supply / 10000 if receipt.new_total_supply else 0.0
+    new_total = getattr(receipt, "new_total_supply", 0) / 10000
     print(f"\n✅ Mint Successful!")
     print(f"   Status: {receipt.status}")
     print(f"   New Total Supply: {new_total} NEX")
@@ -95,12 +94,7 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
     )
 
     signed_tx = transaction.sign(operator_key)
-    response = signed_tx.execute(client)
-    receipt = response.get_receipt(client)
+    receipt = signed_tx.execute(client)  # Returns TransactionReceipt directly
 
     print(f"✅ Transfer Successful! Status: {receipt.status}")
     return receipt.status
-
-if __name__ == "__main__":
-    # Test minting 100 NEX to Treasury when run directly
-    mint_nex_tokens(100.0)
