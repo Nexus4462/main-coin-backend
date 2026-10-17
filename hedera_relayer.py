@@ -10,16 +10,28 @@ from hiero_sdk_python import (
 
 def get_token_id_str():
     """Fallback to check multiple potential environment variable keys for Token ID."""
-    return (
+    token_id = (
         os.getenv("TOKEN_ID")
         or os.getenv("NEX_TOKEN_ID")
         or os.getenv("NEX_NEX_TOKEN_ID")
         or "0.0.10991235"
     ).strip().strip('"').strip("'")
+    
+    # Safety check: Prevent player wallet ID from being used as the Token ID
+    if token_id == "0.0.11035514":
+        return "0.0.10991235"
+        
+    return token_id
 
 def get_hedera_client():
-    """Initializes and returns the Hedera SDK Client and credentials safely without calling exit()."""
-    # Fallback to handle both OPERATOR_ID and HEDERA_OPERATOR_ID naming conventions
+    """Initializes and returns the Hedera SDK Client and credentials safely."""
+    # Load .env explicitly if python-dotenv is installed
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+    except ImportError:
+        pass
+
     operator_id_str = (
         os.getenv("OPERATOR_ID") 
         or os.getenv("HEDERA_OPERATOR_ID", "")
@@ -30,12 +42,24 @@ def get_hedera_client():
         or os.getenv("HEDERA_OPERATOR_KEY", "")
     ).strip().strip('"').strip("'")
 
+    print(f"🔍 DEBUG: Loaded OPERATOR_ID from env = '{operator_id_str}'")
+
     if not operator_id_str or not raw_key:
-        raise RuntimeError(
-            "CRITICAL ERROR: OPERATOR_ID or OPERATOR_KEY environment variables are missing on Render!"
-        )
+        raise RuntimeError("CRITICAL ERROR: OPERATOR_ID or OPERATOR_KEY environment variables are missing!")
 
     operator_id = AccountId.from_string(operator_id_str)
+
+    try:
+        operator_key = PrivateKey.from_string_ecdsa(raw_key)
+    except Exception:
+        try:
+            operator_key = PrivateKey.from_string(raw_key)
+        except Exception:
+            operator_key = PrivateKey.from_string_ed25519(raw_key)
+
+    client = Client.for_testnet()
+    client.set_operator(operator_id, operator_key)
+    return client, operator_id, operator_key
 
     # Force ECDSA SECP256K1 key parsing for account 0.0.10770972
     try:
