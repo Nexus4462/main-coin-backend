@@ -109,13 +109,14 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
     signed_tx = transaction.sign(operator_key)
     receipt = signed_tx.execute(client)
 
-    status_str = str(receipt.status)
-    status_val = getattr(receipt.status, "value", None)
+    status_raw = receipt.status
+    status_str = str(status_raw).upper()
+    status_val = getattr(status_raw, "value", None)
 
-    # Check for SUCCESS status (Code 22 or string 'SUCCESS')
-    if status_str in ["SUCCESS", "Status.SUCCESS"] or status_val == 22:
-        print(f"✅ Transfer Successful! Status: SUCCESS")
+    # Status 22 or SUCCESS indicates the network accepted and processed the transfer
+    if "SUCCESS" in status_str or status_val == 22 or status_raw == 22:
+        print("✅ Transfer Executed Successfully on Hedera Testnet!")
         return "SUCCESS"
 
-    print(f"❌ Transfer Failed! Status: {status_str}")
+    print(f"❌ Transfer Failed with Status: {status_str}")
     return status_str
