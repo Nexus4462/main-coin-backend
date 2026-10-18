@@ -109,11 +109,13 @@ def transfer_nex_tokens(target_account_id: str, amount: float):
     signed_tx = transaction.sign(operator_key)
     receipt = signed_tx.execute(client)
 
-    # Extract integer status code or fallback to string name for bot compatibility
-    status_code = getattr(receipt.status, "value", receipt.status)
-    print(f"✅ Transfer Attempt Complete! Status: {status_code}")
-    
-    # Return explicit success indicator or status code
-    if str(receipt.status) in ["SUCCESS", "Status.SUCCESS", "22"]:
-        return 22
-    return status_code
+    status_str = str(receipt.status)
+    status_val = getattr(receipt.status, "value", None)
+
+    # Check for SUCCESS status (Code 22 or string 'SUCCESS')
+    if status_str in ["SUCCESS", "Status.SUCCESS"] or status_val == 22:
+        print(f"✅ Transfer Successful! Status: SUCCESS")
+        return "SUCCESS"
+
+    print(f"❌ Transfer Failed! Status: {status_str}")
+    return status_str
