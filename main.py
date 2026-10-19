@@ -476,6 +476,40 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
             detail=f"Hedera transfer rejected with status: {status}"
         )
 
+@app.post("/api/v1/store/buy")
+async def process_cosmetic_purchase(req: PurchaseRequest):
+    # 1. Fetch player profile from database
+    player = get_player_db(req.player_id)
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+        
+    current_spendable = player.get("spendable_nex", 0.0)
+    
+    # 2. Check off-chain balance
+    if current_spendable < req.price:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Insufficient off-chain balance. Required: {req.price} NEX, Available: {current_spendable} NEX"
+        )
+    
+    # 3. Deduct off-chain NEX and update unlocked inventory
+    new_balance = current_spendable - req.price
+    update_player_balance_and_inventory(req.player_id, new_balance, req.item_id)
+    
+    # 4. Deflationary Sink Metrics (13% Burn, 87% Recirculate)
+    burned_amount = req.price * 0.13
+    recirculated_amount = req.price * 0.87
+    
+    print(f"🔥 Cosmetic Purchase Sink: {req.price} NEX total | Burned: {burned_amount:.2f} NEX | Recirculated: {recirculated_amount:.2f} NEX")
+    
+    return {
+        "status": "SUCCESS",
+        "item_id": req.item_id,
+        "new_spendable_balance": new_balance,
+        "burned_nex": burned_amount,
+        "recirculated_nex": recirculated_amount
+    }
+
 # =====================================================================
 # 7. CORE API ENDPOINTS & MOBILE CONTROLS
 # =====================================================================
