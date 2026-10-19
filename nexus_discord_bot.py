@@ -38,6 +38,26 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
             if res.status_code == 200:
                 data = res.json()
                 
+                # Fetch target wallet ID (default to player wallet)
+                wallet_id = data.get("hedera_account_id", "0.0.11035514")
+                nex_token_id = "0.0.10991235"
+                onchain_balance = 0.0
+                
+                # Query Hedera Mirror Node for live on-chain token balance
+                try:
+                    mirror_res = await client.get(
+                        f"https://testnet.mirrornode.hedera.com/api/v1/accounts/{wallet_id}/tokens"
+                    )
+                    if mirror_res.status_code == 200:
+                        tokens = mirror_res.json().get("tokens", [])
+                        for token in tokens:
+                            if token.get("token_id") == nex_token_id:
+                                # Divide by 10,000 for 4 decimal places
+                                onchain_balance = token.get("balance", 0) / 10000.0
+                                break
+                except Exception as mirror_err:
+                    print(f"Mirror Node query failed: {mirror_err}")
+
                 nametag_data = data.get("nametag_style", {})
                 emblem = nametag_data.get("emblem_icon")
                 emblem_prefix = f"{emblem} " if emblem else ""
@@ -46,9 +66,31 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
                     title=f"🔒 {emblem_prefix}Private Vault: {player_id}",
                     color=0x00F0FF
                 )
-                embed.add_field(name="Spendable NEX", value=f"**{data.get('spendable_nex', 0):,} NEX**", inline=True)
-                embed.add_field(name="Total Earned", value=f"{data.get('total_nex_earned', 0):,} NEX", inline=True)
-                embed.add_field(name="Hours Played", value=f"{data.get('total_hours_played', 0)} hrs", inline=True)
+                
+                # Off-Chain Pending / Spendable
+                embed.add_field(
+                    name="⛏️ Off-Chain Unclaimed", 
+                    value=f"**{data.get('spendable_nex', 0):,.2f} NEX**", 
+                    inline=True
+                )
+                
+                # Live On-Chain HashPack Wallet Balance
+                embed.add_field(
+                    name="🔗 On-Chain (HashPack)", 
+                    value=f"**{onchain_balance:,.2f} NEX**", 
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="🏆 Total Earned", 
+                    value=f"{data.get('total_nex_earned', 0):,.2f} NEX", 
+                    inline=True
+                )
+                embed.add_field(
+                    name="Hours Played", 
+                    value=f"{data.get('total_hours_played', 0)} hrs", 
+                    inline=True
+                )
                 
                 prestige = nametag_data.get('prestige_tag', '[NEX]')
                 embed.add_field(name="Prestige Rank", value=f"{prestige}", inline=False)
@@ -58,7 +100,7 @@ async def check_balance(interaction: discord.Interaction, player_id: str):
             else:
                 await interaction.followup.send(f"❌ Could not fetch profile for `{player_id}`. Status: {res.status_code}", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)        
+        await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)      
 
 # --- PRIVACY COMMAND: Claim Monthly Reward ---
 @bot.tree.command(name="claim-monthly", description="Claim spendable NEX balance on-chain to your linked Hedera wallet")
