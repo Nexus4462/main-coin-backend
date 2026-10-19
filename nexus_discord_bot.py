@@ -76,7 +76,7 @@ async def claim_monthly(interaction: discord.Interaction):
             wallet = data.get("wallet")
             await interaction.followup.send(
                 f"🎉 **Claim Successful!**\n"
-                f"Transferred **{amount} NEX** to `{wallet}`!\n"
+                f"Transferred **{amount:.2f} NEX** to `{wallet}`!\n"
                 f"View on HashScan: https://hashscan.io/testnet/account/{wallet}"
             )
         else:
