@@ -145,4 +145,5 @@ async def link_wallet(interaction: discord.Interaction, account_id: str):
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(
                 f"{BACKEND_URL}/api/wallet/link",
-                json={"player_id": player_id, "hedera_account_
+                json={"player_id": player_id, "hedera_account_id": account_id}
+            )
