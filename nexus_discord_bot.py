@@ -2,6 +2,7 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
+import discord.ext import commands, tasks
 from discord import app_commands
 import httpx
 from dotenv import load_dotenv
@@ -214,6 +215,8 @@ async def buy_cosmetic(interaction: discord.Interaction, item_id: str, player_id
     except Exception as e:
         await interaction.followup.send(f"⚠️ Central Bank connection error: {e}", ephemeral=True)
 
+
+
 @bot.event
 async def on_ready():
     print(f"🤖 Connected as {bot.user.name} (ID: {bot.user.id})")
@@ -222,6 +225,54 @@ async def on_ready():
         print(f"✅ Synced {len(synced)} slash commands.")
     except Exception as e:
         print(f"❌ Failed to sync slash commands: {e}")
+
+from discord.ext import tasks
+import httpx
+
+# 1. Define the 24-hour reminder task
+@tasks.loop(hours=24)
+async def check_unclaimed_nex_reminder():
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.get(f"{BACKEND_URL}/api/v1/players/unclaimed")
+            if res.status_code == 200:
+                players = res.json().get("players", [])
+                
+                # Replace with your actual Discord notification channel ID
+                channel = bot.get_channel(1234567890123456789) 
+                
+                for player in players:
+                    unclaimed = player.get("spendable_nex", 0.0)
+                    discord_id = player.get("discord_user_id")
+                    
+                    if unclaimed >= 10.0 and channel:
+                        embed = discord.Embed(
+                            title="🪙 Daily NEX Vault Alert",
+                            description=f"<@{discord_id}>, you have **{unclaimed:,.2f} NEX** waiting in your unclaimed off-chain vault!",
+                            color=0xFFD700
+                        )
+                        embed.add_field(
+                            name="Action Required", 
+                            value="Run **`/claim-monthly`** to transfer your rewards directly to your HashPack wallet."
+                        )
+                        embed.set_footer(text="Nexus Central Bank • Automated 24h Reminder Loop")
+                        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"Error in daily claim reminder loop: {e}")
+
+@check_unclaimed_nex_reminder.before_loop
+async def before_reminder_loop():
+    await bot.wait_until_ready()
+
+# 2. Hook into your existing on_ready event
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} - Nexus Bot ready.")
+    
+    # Start the task loop when the bot connects to Discord
+    if not check_unclaimed_nex_reminder.is_running():
+        check_unclaimed_nex_reminder.start()
+        print("🚀 Daily NEX unclaimed reminder loop started.")
 
 # --- FASTAPI STARTUP EVENT (LAUNCHES BOT) ---
 @app.on_event("startup")
