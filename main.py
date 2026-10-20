@@ -8,12 +8,13 @@ import re
 import asyncio
 import uvicorn
 import time
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+import hmac
+import hashlib
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timedelta
@@ -24,8 +25,6 @@ from datetime import datetime, timedelta
 TOKEN_NAME = "Nexus"
 TOKEN_TICKER = "NEX"
 
-# Secrets pulled from Environment Variables (Fallback to local dev defaults)
-# Secrets pulled from Environment Variables (Strict Production Security)
 _raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET")
 if not _raw_hmac_secret:
     raise ValueError("CRITICAL SECURITY ERROR: 'HMAC_SECRET' environment variable is missing on the server!")
@@ -36,10 +35,9 @@ ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
 if not ADMIN_SECRET_KEY:
     raise ValueError("CRITICAL SECURITY ERROR: 'ADMIN_SECRET_KEY' environment variable is missing on the server!")
 
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")  # Configured in Render Environment Variables
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
-# Global In-Memory Security & System State
 BLACKHOLE_IP_POOL: set = set()
 PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
@@ -73,7 +71,7 @@ class ConnectedAccountModel(Base):
     __tablename__ = "connected_accounts"
 
     player_id = Column(String, primary_key=True, index=True)
-    platform_name = Column(String, nullable=False)        # e.g., "minecraft", "steam", "discord", "hedera_wallet"
+    platform_name = Column(String, nullable=False)
     external_account_id = Column(String, nullable=False, unique=True)
     linked_at = Column(Float, default=time.time)
 
@@ -83,11 +81,11 @@ class PlayerInventoryModel(Base):
     instance_id = Column(String, primary_key=True, index=True)
     player_id = Column(String, index=True, nullable=False)
     item_id = Column(String, nullable=False)
-    item_type = Column(String, default="Standard")          # "Standard", "Creator_Reward", "Event_Gift"
-    acquired_via = Column(String, default="Store_Purchase")  # "Store_Purchase", "Operator_Gift"
+    item_type = Column(String, default="Standard")
+    acquired_via = Column(String, default="Store_Purchase")
     hours_logged_on_item = Column(Float, default=0.0)
     hours_required_to_unlock = Column(Float, default=10.0)
-    is_tradeable = Column(Integer, default=0)                # 0 = Account-Locked, 1 = Tradeable
+    is_tradeable = Column(Integer, default=0)
     acquired_at = Column(Float, default=time.time)
 
 class StoreCatalogModel(Base):
@@ -100,6 +98,26 @@ class StoreCatalogModel(Base):
     developer_id = Column(String, nullable=False)
     multiplier_boost = Column(Float, default=1.0)
     is_active = Column(Boolean, default=True)
+
+class RegisteredGameModel(Base):
+    __tablename__ = "registered_games"
+
+    game_id = Column(String, primary_key=True, index=True)
+    developer_id = Column(String, nullable=False)
+    game_name = Column(String, nullable=False)
+    webhook_url = Column(String, nullable=True)
+    status = Column(String, default="ACTIVE")
+    registered_at = Column(Float, default=time.time)
+
+class GameCosmeticModel(Base):
+    __tablename__ = "game_cosmetics"
+
+    item_key = Column(String, primary_key=True, index=True)
+    game_id = Column(String, nullable=False)
+    item_name = Column(String, nullable=False)
+    price_nex = Column(Float, nullable=False)
+    asset_url = Column(String, nullable=True)
+    category = Column(String, default="skin")
 
 class DeveloperModel(Base):
     __tablename__ = "developers"
@@ -183,15 +201,12 @@ app.add_middleware(
 )
 
 def trigger_discord_alert(details: str):
-    """Sends a real-time security alert to your phone via Discord Webhook."""
     if not DISCORD_WEBHOOK_URL:
         print(f"⚠️ [SECURITY ALERT - NO WEBHOOK CONFIGURED]: {details}")
         return
 
     try:
-        payload = {
-            "content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"
-        }
+        payload = {"content": f"🚨 **NEXUS CENTRAL BANK SECURITY ALERT**\n{details}"}
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5.0)
         response.raise_for_status()
         print(f"✅ Discord security alert dispatched successfully: {details}")
@@ -202,21 +217,13 @@ def trigger_discord_alert(details: str):
 async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
-    # Honeypot Traps: Flag malicious scanners attempting to hit fake administrative endpoints
     if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
         BLACKHOLE_IP_POOL.add(client_ip)
         trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
-        return JSONResponse(
-            status_code=200, 
-            content={"status": "success", "message": "Debug state logged."}
-        )
+        return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
 
-    # Silent Blackhole Neutralization: Return fake success without database operations or minting
     if client_ip in BLACKHOLE_IP_POOL:
-        return JSONResponse(
-            status_code=200, 
-            content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"}
-        )
+        return JSONResponse(status_code=200, content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"})
 
     response = await call_next(request)
     return response
@@ -248,12 +255,7 @@ def get_or_create_player(db: Session, player_id: str) -> PlayerModel:
     return player
 
 def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
-    prestige_colors = {
-        0: "#FFFFFF",  # Base White
-        1: "#CD7F32",  # Bronze
-        2: "#C0C0C0",  # Silver
-        3: "#FFD700",  # Gold
-    }
+    prestige_colors = {0: "#FFFFFF", 1: "#CD7F32", 2: "#C0C0C0", 3: "#FFD700"}
     color = prestige_colors.get(player.prestige_level, "#00F0FF")
 
     emblem = None
@@ -265,7 +267,7 @@ def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
         if special_item:
             emblem = "🏆"
     except Exception:
-        db.rollback()  # Safely handle missing table or column schema issues
+        db.rollback()
 
     if emblem is None and player.total_hours_played < 24.0:
         emblem = "⚡"
@@ -318,6 +320,19 @@ class WalletLinkRequest(BaseModel):
     player_id: str
     hedera_account_id: str
 
+class RegisterGameRequest(BaseModel):
+    developer_id: str
+    game_name: str
+    webhook_url: str
+
+class GameCosmeticRequest(BaseModel):
+    game_id: str
+    item_id: str
+    item_name: str
+    price_nex: float
+    asset_url: str
+    category: str = "skin"
+
 HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+$"
 
 # =====================================================================
@@ -325,10 +340,8 @@ HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+$"
 # =====================================================================
 @app.post("/api/v1/link/generate")
 async def generate_link_code(player_id: str = Body(..., embed=True)):
-    """Generates a temporary 10-minute linking code (NX-XXXX)."""
     code_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
     link_code = f"NX-{code_suffix}"
-    
     expires_at = datetime.utcnow() + timedelta(minutes=10)
     LINK_CODES[link_code] = {"player_id": player_id, "expires": expires_at}
     
@@ -341,13 +354,11 @@ async def generate_link_code(player_id: str = Body(..., embed=True)):
 
 @app.post("/api/v1/link/verify")
 async def verify_link_code(payload: dict = Body(...)):
-    """Verifies the link code submitted by nexus_discord_bot.py."""
     link_code = payload.get("link_code", "").strip().upper()
     discord_id = payload.get("discord_id")
     discord_tag = payload.get("discord_tag")
     
     record = LINK_CODES.get(link_code)
-    
     if not record:
         raise HTTPException(status_code=400, detail="Invalid or expired link code.")
     
@@ -371,16 +382,12 @@ async def verify_link_code(payload: dict = Body(...)):
 @app.post("/api/wallet/link")
 async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
     if not re.match(HEDERA_ACCOUNT_REGEX, data.hedera_account_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Hedera Account ID format. Expected format: 0.0.123456"
-        )
+        raise HTTPException(status_code=400, detail="Invalid Hedera Account ID format. Expected format: 0.0.123456")
         
     player = db.query(PlayerModel).filter(PlayerModel.player_id == data.player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail="Player profile not found.")
 
-    # Save connected account mapping
     connected_acc = db.query(ConnectedAccountModel).filter(ConnectedAccountModel.player_id == data.player_id).first()
     if not connected_acc:
         connected_acc = ConnectedAccountModel(
@@ -394,10 +401,7 @@ async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
 
     db.commit()
 
-    return {
-        "status": "success",
-        "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"
-    }
+    return {"status": "success", "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"}
 
 @app.get("/api/v1/player/{player_id}/wallet")
 def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
@@ -409,34 +413,24 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
     if not connected:
         return {"player_id": player_id, "hedera_wallet_id": None}
 
-    return {
-        "player_id": player_id,
-        "hedera_wallet_id": connected.external_account_id
-    }
+    return {"player_id": player_id, "hedera_wallet_id": connected.external_account_id}
 
 @app.post("/api/v1/player/{player_id}/claim")
 async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
-    """Executes HTS token transfer safely in a background thread to prevent thread freezing."""
-    # 1. Fetch player balance
     player = get_or_create_player(db, player_id)
     if player.spendable_nex <= 0:
         raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
 
-    # 2. Fetch linked Hedera wallet
     connected = db.query(ConnectedAccountModel).filter(
         ConnectedAccountModel.player_id == player_id,
         ConnectedAccountModel.platform_name == "hedera_wallet"
     ).first()
 
     if not connected or not connected.external_account_id:
-        raise HTTPException(
-            status_code=400, 
-            detail="No linked Hedera wallet found. Run /link-wallet in Discord first!"
-        )
+        raise HTTPException(status_code=400, detail="No linked Hedera wallet found. Run /link-wallet in Discord first!")
 
     claim_amount = player.spendable_nex
 
-    # 3. Offload synchronous Hedera SDK call to an async thread pool with a 15s timeout
     try:
         from hedera_relayer import transfer_nex_tokens
         
@@ -447,12 +441,10 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Hedera Testnet transaction timed out. Please try again.")
     except Exception as e:
-        # RETURN EXACT EXCEPTION DETAILS TO DISCORD FOR DIAGNOSTICS
         import traceback
         error_msg = f"Relayer Exception: {str(e)} | Details: {traceback.format_exc()[:150]}"
         raise HTTPException(status_code=400, detail=error_msg)
 
-    # 4. Clear DB balance on SUCCESS
     if str(status) in ["SUCCESS", "Status.SUCCESS"]:
         player.spendable_nex = 0.0
         
@@ -465,69 +457,100 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
         db.add(audit_entry)
         db.commit()
 
-        return {
-            "status": "success",
-            "amount": claim_amount,
-            "wallet": connected.external_account_id
-        }
+        return {"status": "success", "amount": claim_amount, "wallet": connected.external_account_id}
     else:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Hedera transfer rejected with status: {status}"
-        )
+        raise HTTPException(status_code=400, detail=f"Hedera transfer rejected with status: {status}")
 
-@app.post("/api/v1/store/buy")
-async def process_cosmetic_purchase(req: StorePurchaseRequest):
-    # 1. Fetch player profile from database
-    player = get_player_db(req.player_id)
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
+# =====================================================================
+# 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
+# =====================================================================
+@app.post("/api/v1/developer/register", tags=["Developer Store"])
+async def register_game(req: RegisterGameRequest, db: Session = Depends(get_db)):
+    game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
+    
+    existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
+    if existing:
+        return {"status": "SUCCESS", "message": "Game already registered", "game_id": game_id}
         
-    current_spendable = player.get("spendable_nex", 0.0)
+    game = RegisteredGameModel(
+        game_id=game_id,
+        developer_id=req.developer_id,
+        game_name=req.game_name,
+        webhook_url=req.webhook_url
+    )
+    db.add(game)
+    db.commit()
     
-    # 2. Check off-chain balance
-    if current_spendable < req.price:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Insufficient off-chain balance. Required: {req.price} NEX, Available: {current_spendable} NEX"
-        )
+    return {"status": "SUCCESS", "game_id": game_id}
+
+@app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
+async def add_game_cosmetic(req: GameCosmeticRequest, db: Session = Depends(get_db)):
+    game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == req.game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game ID not found in registry")
+        
+    item_key = f"{req.game_id}:{req.item_id}"
     
-    # 3. Deduct off-chain NEX and update unlocked inventory
-    new_balance = current_spendable - req.price
-    update_player_balance_and_inventory(req.player_id, new_balance, req.item_id)
+    cosmetic = GameCosmeticModel(
+        item_key=item_key,
+        game_id=req.game_id,
+        item_name=req.item_name,
+        price_nex=req.price_nex,
+        asset_url=req.asset_url,
+        category=req.category
+    )
+    db.add(cosmetic)
+    db.commit()
     
-    # 4. Deflationary Sink Metrics (13% Burn, 87% Recirculate)
-    burned_amount = req.price * 0.13
-    recirculated_amount = req.price * 0.87
-    
-    print(f"🔥 Cosmetic Purchase Sink: {req.price} NEX total | Burned: {burned_amount:.2f} NEX | Recirculated: {recirculated_amount:.2f} NEX")
+    return {"status": "SUCCESS", "item_key": item_key}
+
+@app.get("/api/v1/store/catalogue", tags=["Developer Store"])
+async def get_full_store_catalogue(db: Session = Depends(get_db)):
+    core_items = db.query(StoreCatalogModel).filter(StoreCatalogModel.is_active == True).all()
+    dev_items = db.query(GameCosmeticModel).all()
     
     return {
-        "status": "SUCCESS",
-        "item_id": req.item_id,
-        "new_spendable_balance": new_balance,
-        "burned_nex": burned_amount,
-        "recirculated_nex": recirculated_amount
+        "global_cosmetics": [
+            {
+                "item_id": item.item_id,
+                "name": item.name,
+                "description": item.description,
+                "price_nex": item.price_nex
+            } for item in core_items
+        ],
+        "developer_cosmetics": [
+            {
+                "item_key": item.item_key,
+                "game_id": item.game_id,
+                "name": item.item_name,
+                "price_nex": item.price_nex,
+                "category": item.category,
+                "asset_url": item.asset_url
+            } for item in dev_items
+        ]
     }
 
 @app.get("/api/v1/players/unclaimed")
-async def get_unclaimed_players():
-    # Fetch active players with unclaimed NEX (>= 10.0) from database
-    unclaimed_players = []
-    
-    # Example database query loop:
-    # for player_id, data in db.items():
-    #     if data.get("spendable_nex", 0.0) >= 10.0:
-    #         unclaimed_players.append({
-    #             "player_id": player_id,
-    #             "spendable_nex": data.get("spendable_nex", 0.0),
-    #             "discord_user_id": data.get("discord_user_id", "123456789")
-    #         })
+async def get_unclaimed_players(db: Session = Depends(get_db)):
+    players = db.query(PlayerModel).filter(PlayerModel.spendable_nex >= 10.0).all()
+    unclaimed_list = []
+    for p in players:
+        connected = db.query(ConnectedAccountModel).filter(
+            ConnectedAccountModel.player_id == p.player_id,
+            ConnectedAccountModel.platform_name == "discord"
+        ).first()
+        discord_id = connected.external_account_id if connected else "0"
+        
+        unclaimed_list.append({
+            "player_id": p.player_id,
+            "spendable_nex": p.spendable_nex,
+            "discord_user_id": discord_id
+        })
             
-    return {"players": unclaimed_players}
+    return {"players": unclaimed_list}
 
 # =====================================================================
-# 7. CORE API ENDPOINTS & MOBILE CONTROLS
+# 8. CORE API ENDPOINTS & MOBILE CONTROLS
 # =====================================================================
 @app.get("/", response_class=HTMLResponse)
 def root_dashboard(db: Session = Depends(get_db)):
@@ -578,28 +601,23 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
     client_ip = request.client.host or "127.0.0.1"
     current_time = int(time.time())
 
-    # --- KILL SWITCH CHECK ---
     if IS_MINTING_PAUSED:
         raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
 
-    # --- SECURITY LAYER 1: Replay Window Check ---
     if abs(current_time - data.timestamp) > 300:
         trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
         raise HTTPException(status_code=401, detail="Expired telemetry payload window.")
 
-    # --- SECURITY LAYER 2: Nonce Single-Use Validation ---
     if data.nonce in PROCESSED_NONCES:
         BLACKHOLE_IP_POOL.add(client_ip)
         trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`. IP Blackholed.")
         raise HTTPException(status_code=401, detail="Replay payload detected.")
 
-    # --- SECURITY LAYER 3: Mathematical Velocity Cap ---
     if data.minutes_played > 60 or data.minutes_played <= 0:
         raise HTTPException(status_code=400, detail="Invalid gameplay duration telemetry.")
 
-    # --- SECURITY LAYER 4: HMAC Cryptographic Validation (With Dev Bypass) ---
     if data.signature == "dev_bypass_sig":
-        pass  # Operator/Developer testing bypass
+        pass
     else:
         payload = f"{data.player_id}:{data.minutes_played}:{data.timestamp}:{data.nonce}".encode('utf-8')
         expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
@@ -611,7 +629,6 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
 
     PROCESSED_NONCES.add(data.nonce)
 
-    # --- PROCESS EARN CALCULATIONS & TOKENOMICS BURNS ---
     player = get_or_create_player(db, data.player_id)
     hours_added = data.minutes_played / 60.0
     player.total_hours_played += hours_added
@@ -623,15 +640,12 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         multiplier += 0.10
 
     gross_earned_nex = (base_rate * hours_added) * multiplier
-    
-    # 1% Dynamic Base-Fee Burn
     burned_fee = gross_earned_nex * 0.01
     net_earned_nex = gross_earned_nex - burned_fee
 
     player.spendable_nex += net_earned_nex
     player.total_nex_earned += net_earned_nex
 
-    # Audit Log Entry with Safety Fallback
     try:
         audit_entry = AuditLogModel(
             action_type="TELEMETRY_MINT",
@@ -680,13 +694,13 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
 
     player.spendable_nex -= item.price_nex
 
-    # Execute 75/25 Developer Split
-    dev_cut = item.price_nex * 0.75
-    platform_cut = item.price_nex * 0.25
+    # Execute Deflationary Sink: 13% Burn, 87% Recirculate
+    burned_amount = item.price_nex * 0.13
+    recirculated_amount = item.price_nex * 0.87
 
     developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == item.developer_id).first()
     if developer:
-        developer.earned_nex_balance += dev_cut
+        developer.earned_nex_balance += recirculated_amount
 
     instance_id = f"inst_{item.item_id}_{int(time.time())}_{player.player_id[:4]}"
     inventory_item = PlayerInventoryModel(
@@ -702,7 +716,7 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
         action_type="STORE_PURCHASE",
         player_id=player.player_id,
         amount_nex=item.price_nex,
-        details=f"Purchased '{item.name}'. Dev Cut: {dev_cut:.2f} NEX, Treasury Cut: {platform_cut:.2f} NEX"
+        details=f"Purchased '{item.name}'. Burned: {burned_amount:.2f} NEX, Recirculated: {recirculated_amount:.2f} NEX"
     )
     db.add(audit_entry)
     db.commit()
@@ -711,12 +725,13 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
         "status": "success",
         "message": f"Successfully purchased {item.name}.",
         "instance_id": instance_id,
+        "burned_nex": round(burned_amount, 4),
+        "recirculated_nex": round(recirculated_amount, 4),
         "remaining_spendable_nex": round(player.spendable_nex, 4)
     }
 
 @app.post("/api/v1/developer/catalog/add", tags=["Developer Store"])
 def add_developer_store_item(req: DeveloperItemCreateRequest, db: Session = Depends(get_db)):
-    """Allows game developers to publish new items/NFTs directly to the central bank store catalog."""
     existing_item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id).first()
     if existing_item:
         raise HTTPException(status_code=400, detail=f"Item ID '{req.item_id}' is already registered in the catalog.")
@@ -752,7 +767,6 @@ def add_developer_store_item(req: DeveloperItemCreateRequest, db: Session = Depe
 
 @app.get("/api/v1/developer/{developer_id}/catalog", tags=["Developer Store"])
 def get_developer_catalog(developer_id: str, db: Session = Depends(get_db)):
-    """Retrieves all active items registered by a specific game developer."""
     items = db.query(StoreCatalogModel).filter(
         StoreCatalogModel.developer_id == developer_id,
         StoreCatalogModel.is_active == True
@@ -773,11 +787,10 @@ def get_developer_catalog(developer_id: str, db: Session = Depends(get_db)):
     }
 
 # =====================================================================
-# 8. MOBILE REMOTE CONTROLS & ADMIN ENDPOINTS
+# 9. MOBILE REMOTE CONTROLS & ADMIN ENDPOINTS
 # =====================================================================
 @app.post("/api/v1/admin/toggle-pause")
 def toggle_minting_pause(x_admin_key: str = Header(...)):
-    """Remote Emergency Kill Switch: Trigger from your phone to pause/unpause NEX minting."""
     global IS_MINTING_PAUSED
     if x_admin_key != ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized operator key.")
