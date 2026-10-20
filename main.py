@@ -510,6 +510,22 @@ async def process_cosmetic_purchase(req: StorePurchaseRequest):
         "recirculated_nex": recirculated_amount
     }
 
+@app.get("/api/v1/players/unclaimed")
+async def get_unclaimed_players():
+    # Fetch active players with unclaimed NEX (>= 10.0) from database
+    unclaimed_players = []
+    
+    # Example database query loop:
+    # for player_id, data in db.items():
+    #     if data.get("spendable_nex", 0.0) >= 10.0:
+    #         unclaimed_players.append({
+    #             "player_id": player_id,
+    #             "spendable_nex": data.get("spendable_nex", 0.0),
+    #             "discord_user_id": data.get("discord_user_id", "123456789")
+    #         })
+            
+    return {"players": unclaimed_players}
+
 # =====================================================================
 # 7. CORE API ENDPOINTS & MOBILE CONTROLS
 # =====================================================================
