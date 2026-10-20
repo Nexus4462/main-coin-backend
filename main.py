@@ -477,7 +477,7 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
         )
 
 @app.post("/api/v1/store/buy")
-async def process_cosmetic_purchase(req: PurchaseRequest):
+async def process_cosmetic_purchase(req: StorePurchaseRequest):
     # 1. Fetch player profile from database
     player = get_player_db(req.player_id)
     if not player:
