@@ -431,16 +431,17 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/player/{player_id}")
 async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    player = db.query(Player).filter(Player.player_id == player_id).first()
+    # Query using PlayerModel instead of Player
+    player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
     
-    # Auto-create player row if missing to prevent 404s
     if not player:
-        player = Player(
+        player = PlayerModel(
             player_id=player_id,
             spendable_nex=500.0,
             total_nex_earned=500.0,
             total_hours_played=1.0,
-            display_name=player_id
+            prestige_level=0,
+            created_at=time.time()
         )
         db.add(player)
         db.commit()
