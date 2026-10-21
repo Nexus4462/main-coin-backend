@@ -429,15 +429,15 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
     return {"player_id": player_id, "hedera_wallet_id": connected.external_account_id}
 
-@app.get("/api/v1/player/{player_id}", tags=["Player Profile"])
+@app.get("/api/v1/player/{player_id}")
 async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
     player = db.query(Player).filter(Player.player_id == player_id).first()
     
-    # Auto-initialize player if not in DB yet
+    # Auto-create player row if missing to prevent 404s
     if not player:
         player = Player(
             player_id=player_id,
-            spendable_nex=500.0,  # Starting test balance
+            spendable_nex=500.0,
             total_nex_earned=500.0,
             total_hours_played=1.0,
             display_name=player_id
