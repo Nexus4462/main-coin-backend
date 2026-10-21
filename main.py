@@ -46,7 +46,8 @@ IS_MINTING_PAUSED: bool = False
 LINK_CODES: Dict[str, Any] = {}
 
 DEV_SECRET_KEY = os.getenv("DEV_SECRET_KEY", "nexus_dev_secret_2026")
-def verify_dev_key(x_developer_key: str = Header(...)):
+
+def verify_developer_key(x_developer_key: str = Header(...)):
     """
     Validates that incoming developer API requests carry the correct X-Developer-Key header
     """
