@@ -428,51 +428,33 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
     return {"player_id": player_id, "hedera_wallet_id": connected.external_account_id}
 
-@app.post("/api/v1/player/{player_id}/claim")
-async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
-    player = get_or_create_player(db, player_id)
-    if player.spendable_nex <= 0:
-        raise HTTPException(status_code=400, detail="No spendable NEX available to claim.")
-
-    connected = db.query(ConnectedAccountModel).filter(
-        ConnectedAccountModel.player_id == player_id,
-        ConnectedAccountModel.platform_name == "hedera_wallet"
-    ).first()
-
-    if not connected or not connected.external_account_id:
-        raise HTTPException(status_code=400, detail="No linked Hedera wallet found. Run /link-wallet in Discord first!")
-
-    claim_amount = player.spendable_nex
-
-    try:
-        from hedera_relayer import transfer_nex_tokens
-        
-        status = await asyncio.wait_for(
-            asyncio.to_thread(transfer_nex_tokens, connected.external_account_id, claim_amount),
-            timeout=15.0
+@app.get("/api/v1/player/{player_id}", tags=["Player Profile"])
+async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
+    player = db.query(Player).filter(Player.player_id == player_id).first()
+    
+    # Auto-initialize player if not in DB yet
+    if not player:
+        player = Player(
+            player_id=player_id,
+            spendable_nex=500.0,  # Starting test balance
+            total_nex_earned=500.0,
+            total_hours_played=1.0,
+            display_name=player_id
         )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Hedera Testnet transaction timed out. Please try again.")
-    except Exception as e:
-        import traceback
-        error_msg = f"Relayer Exception: {str(e)} | Details: {traceback.format_exc()[:150]}"
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    if str(status) in ["SUCCESS", "Status.SUCCESS"]:
-        player.spendable_nex = 0.0
-        
-        audit_entry = AuditLogModel(
-            action_type="ONCHAIN_CLAIM",
-            player_id=player.player_id,
-            amount_nex=claim_amount,
-            details=f"Claimed {claim_amount:.4f} NEX on-chain to {connected.external_account_id}"
-        )
-        db.add(audit_entry)
+        db.add(player)
         db.commit()
+        db.refresh(player)
 
-        return {"status": "success", "amount": claim_amount, "wallet": connected.external_account_id}
-    else:
-        raise HTTPException(status_code=400, detail=f"Hedera transfer rejected with status: {status}")
+    return {
+        "player_id": player.player_id,
+        "spendable_nex": player.spendable_nex,
+        "total_nex_earned": player.total_nex_earned,
+        "total_hours_played": player.total_hours_played,
+        "nametag_style": {
+            "text_color": "#00F0FF",
+            "display_name_formatted": f"🏆 [NEX] {player.player_id}"
+        }
+    }
 
 # =====================================================================
 # 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
