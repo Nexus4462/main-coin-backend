@@ -10,7 +10,7 @@ import uvicorn
 import time
 import hmac
 import hashlib
-import fastapi import Header, HTTPExeption, Depends, status
+from fastapi import Header, HTTPException, Depends, status
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
@@ -51,9 +51,9 @@ def verify_dev_key(x_developer_key: str = Header(...)):
     Validates that incoming developer API requests carry the correct X-Developer-Key header
     """
     if x_developer_key != DEV_SECRET_KEY:
-        raise HTTPExeption(
+        raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            details="Forbidden: Invalid or missing Developer API Key"
+            detail="Forbidden: Invalid or missing Developer API Key"
         )
     return x_developer_key
 
