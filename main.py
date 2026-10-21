@@ -10,6 +10,7 @@ import uvicorn
 import time
 import hmac
 import hashlib
+import fastapi import Header, HTTPExeption, Depends, status
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
@@ -43,6 +44,18 @@ PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
 
 LINK_CODES: Dict[str, Any] = {}
+
+DEV_SECRET_KEY = os.getenv("DEV_SECRET_KEY", "nexus_dev_secret_2026")
+def verify_dev_key(x_developer_key: str = Header(...)):
+    """
+    Validates that incoming developer API requests carry the correct X-Developer-Key header
+    """
+    if x_developer_key != DEV_SECRET_KEY:
+        raise HTTPExeption(
+            status_code=status.HTTP_403_FORBIDDEN,
+            details="Forbidden: Invalid or missing Developer API Key"
+        )
+    return x_developer_key
 
 # =====================================================================
 # 2. DATABASE MODELS & SCHEMA DEFINITIONS
@@ -465,23 +478,65 @@ async def process_player_claim(player_id: str, db: Session = Depends(get_db)):
 # 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
 # =====================================================================
 @app.post("/api/v1/developer/register", tags=["Developer Store"])
-async def register_game(req: RegisterGameRequest, db: Session = Depends(get_db)):
+async def register_game(
+    req: RegisterGameRequest, 
+    db: Session = Depends(get_db),
+    dev_key: str = Depends(verify_developer_key)
+):
+    """
+    Registers a new third-party game title in the NEX ecosystem.
+    Protected by X-Developer-Key authentication.
+    """
     game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
     
-    existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
+    # Check if game already exists
+    existing = db.query(RegisteredGame).filter(RegisteredGame.game_id == game_id).first()
     if existing:
-        return {"status": "SUCCESS", "message": "Game already registered", "game_id": game_id}
-        
-    game = RegisteredGameModel(
+        return {"status": "SUCCESS", "game_id": existing.game_id, "note": "Game already registered"}
+
+    new_game = RegisteredGame(
         game_id=game_id,
         developer_id=req.developer_id,
         game_name=req.game_name,
         webhook_url=req.webhook_url
     )
-    db.add(game)
+    db.add(new_game)
     db.commit()
     
     return {"status": "SUCCESS", "game_id": game_id}
+
+
+@app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
+async def add_game_cosmetic(
+    req: GameCosmeticRequest, 
+    db: Session = Depends(get_db),
+    dev_key: str = Depends(verify_developer_key)
+):
+    """
+    Publishes a new cosmetic item for a registered game into the store catalog.
+    Protected by X-Developer-Key authentication.
+    """
+    item_key = f"{req.game_id}:{req.item_id}"
+    
+    # Check if game exists
+    game = db.query(RegisteredGame).filter(RegisteredGame.game_id == req.game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game ID not registered")
+
+    new_cosmetic = StoreCatalogItem(
+        item_key=item_key,
+        game_id=req.game_id,
+        item_id=req.item_id,
+        name=req.item_name,
+        price_nex=req.price_nex,
+        category=req.category,
+        asset_url=req.asset_url,
+        is_developer_item=True
+    )
+    db.merge(new_cosmetic)
+    db.commit()
+
+    return {"status": "SUCCESS", "item_key": item_key}
 
 @app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
 async def add_game_cosmetic(req: GameCosmeticRequest, db: Session = Depends(get_db)):

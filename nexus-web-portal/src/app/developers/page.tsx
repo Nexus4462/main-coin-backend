@@ -5,6 +5,8 @@ import Link from "next/link";
 import { registerGame } from "@/lib/api";
 
 export default function DeveloperPortal() {
+  const [devSecretKey, setDevSecretKey] = useState("");
+
   // Game Registration State
   const [devId, setDevId] = useState("");
   const [gameName, setGameName] = useState("");
@@ -41,7 +43,10 @@ export default function DeveloperPortal() {
     try {
       const res = await fetch("https://main-coin-backend.onrender.com/api/v1/developer/cosmetics/add", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "X-Developer-Key": devSecretKey
+        },
         body: JSON.stringify({
           game_id: cosmeticGameId,
           item_id: itemId,
@@ -134,6 +139,21 @@ export default function DeveloperPortal() {
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl space-y-4">
             <h2 className="text-xl font-bold text-slate-200">2. Add Game Cosmetic</h2>
             <form onSubmit={handleAddCosmetic} className="space-y-4">
+              
+              {/* Developer Secret Key */}
+              <div>
+                <label className="block text-xs font-mono text-purple-400 mb-1">Developer Secret Key</label>
+                <input
+                  type="password"
+                  placeholder="Enter dev secret key"
+                  value={devSecretKey}
+                  onChange={(e) => setDevSecretKey(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-purple-900/60 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              {/* Game ID */}
               <div>
                 <label className="block text-xs font-mono text-slate-400 mb-1">Game ID</label>
                 <input
@@ -146,38 +166,39 @@ export default function DeveloperPortal() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-mono text-slate-400 mb-1">Item ID</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. skin_neon_01"
-                    value={itemId}
-                    onChange={(e) => setItemId(e.target.value)}
-                    required
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-mono text-slate-400 mb-1">Price (NEX)</label>
-                  <input
-                    type="number"
-                    placeholder="100.0"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
-                    required
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-mono text-slate-400 mb-1">Item ID</label>
+                <input
+                  type="text"
+                  placeholder="e.g. legendary_sword"
+                  value={itemId}
+                  onChange={(e) => setItemId(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
+                />
               </div>
 
               <div>
-                <label className="block text-xs font-mono text-slate-400 mb-1">Display Name</label>
+                <label className="block text-xs font-mono text-slate-400 mb-1">Item Name</label>
                 <input
                   type="text"
-                  placeholder="e.g. Crimson Cyber Armor"
+                  placeholder="e.g. Legendary Sword"
                   value={itemName}
                   onChange={(e) => setItemName(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono text-slate-400 mb-1">Price (NEX)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="e.g. 100"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
                   required
                   className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
                 />
@@ -188,28 +209,25 @@ export default function DeveloperPortal() {
                 <select
                   value={category}
                   onChange={(e) => setCategory(e.target.value)}
+                  required
                   className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-purple-500 font-mono"
                 >
                   <option value="skin">Skin</option>
-                  <option value="glider">Glider</option>
-                  <option value="trail">Trail</option>
-                  <option value="emblem">Emblem</option>
-                  <option value="weapon_wrap">Weapon Wrap</option>
+                  <option value="weapon">Weapon</option>
+                  <option value="other">Other</option>
                 </select>
               </div>
 
               <button
                 type="submit"
-                className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 rounded transition text-sm"
+                className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 rounded transition text-sm"
               >
-                Publish Cosmetic (13% Burn Sink)
+                Publish Cosmetic
               </button>
             </form>
-            {cosmeticStatus && <p className="text-xs font-mono mt-2 text-cyan-300">{cosmeticStatus}</p>}
+            {cosmeticStatus && <p className="text-xs font-mono mt-2 text-purple-300">{cosmeticStatus}</p>}
           </div>
-
         </div>
-
       </div>
     </main>
   );
