@@ -113,7 +113,6 @@ class RegisteredGameModel(Base):
     developer_id = Column(String, nullable=False)
     game_name = Column(String, nullable=False)
     webhook_url = Column(String, nullable=True)
-    created_at = Column(Float, default=time.time)
 
 class GameCosmeticModel(Base):
     __tablename__ = "game_cosmetics"
