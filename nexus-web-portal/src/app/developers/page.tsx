@@ -1,12 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 
 const BASE_URL = "https://main-coin-backend.onrender.com";
 const DEV_KEY = "nexus_dev_secret_2026";
 
 export default function DeveloperStudio() {
+  const [inputKey, setInputKey] = useState("");
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
   // Developer Registration State
   const [developerId, setDeveloperId] = useState("");
   const [gameName, setGameName] = useState("");
@@ -14,12 +18,31 @@ export default function DeveloperStudio() {
   const [regStatus, setRegStatus] = useState<string | null>(null);
 
   // Cosmetic Publishing State
-  const [gameId, setGameId] = useState("game_palworld_mech_arena");
-  const [itemId, setItemId] = useState("skin_cyber_01");
+  const [gameId, setGameId] = useState("");
+  const [itemId, setItemId] = useState("");
   const [priceNex, setPriceNex] = useState("100");
   const [category, setCategory] = useState("Skin");
-  const [displayName, setDisplayName] = useState("Neon Mech Armor");
+  const [displayName, setDisplayName] = useState("");
   const [pubStatus, setPubStatus] = useState<string | null>(null);
+
+  // Check persistent session on load
+  useEffect(() => {
+    const savedKey = sessionStorage.getItem("nexus_dev_auth");
+    if (savedKey === DEV_KEY) {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  const handleAuthSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (inputKey === DEV_KEY) {
+      sessionStorage.setItem("nexus_dev_auth", DEV_KEY);
+      setIsAuthenticated(true);
+      setAuthError(null);
+    } else {
+      setAuthError("Invalid Developer Secret Key.");
+    }
+  };
 
   // 1. Handle Game Registration
   const handleRegisterGame = async (e: React.FormEvent) => {
@@ -42,7 +65,7 @@ export default function DeveloperStudio() {
       const data = await res.json();
       if (res.ok) {
         setRegStatus(`✅ Registered! Assigned Game ID: ${data.game_id}`);
-        setGameId(data.game_id); // Auto-fill the published cosmetic form with the new Game ID
+        setGameId(data.game_id);
       } else {
         setRegStatus(`❌ Registration failed: ${data.detail || "Error"}`);
       }
@@ -83,6 +106,58 @@ export default function DeveloperStudio() {
     }
   };
 
+  // Lock Screen view for unauthenticated users
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#0b0e14] text-white flex items-center justify-center p-6 font-sans">
+        <div className="bg-[#131722] border border-gray-800 rounded-2xl p-8 max-w-md w-full space-y-6 shadow-2xl">
+          <div className="text-center space-y-2">
+            <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500">
+              DEV STUDIO ACCESS
+            </h1>
+            <p className="text-gray-400 text-xs uppercase tracking-widest font-mono">
+              Restricted Developer Portal
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-mono text-gray-400 mb-2">
+                DEVELOPER SECRET KEY
+              </label>
+              <input
+                type="password"
+                required
+                placeholder="Enter secret key..."
+                value={inputKey}
+                onChange={(e) => setInputKey(e.target.value)}
+                className="w-full bg-[#0b0e14] border border-gray-700 rounded-lg p-3 text-sm text-white focus:outline-none focus:border-purple-500 font-mono"
+              />
+            </div>
+
+            {authError && (
+              <p className="text-red-400 text-xs text-center font-mono">{authError}</p>
+            )}
+
+            <button
+              type="submit"
+              className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 font-bold py-3 rounded-lg transition text-sm"
+            >
+              Authenticate Studio Session
+            </button>
+          </form>
+
+          <div className="text-center pt-2">
+            <Link href="/" className="text-xs text-gray-500 hover:text-gray-300 transition">
+              ← Return to Player Portal
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Authenticated Developer Studio Dashboard
   return (
     <div className="min-h-screen bg-[#0b0e14] text-white p-8 font-sans">
       <div className="max-w-4xl mx-auto space-y-8">
@@ -95,9 +170,20 @@ export default function DeveloperStudio() {
             </h1>
             <p className="text-gray-400 text-sm">Authenticated Store Publishing & Economy Integration</p>
           </div>
-          <Link href="/" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm border border-gray-700 transition">
-            ← Back to Player Portal
-          </Link>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => {
+                sessionStorage.removeItem("nexus_dev_auth");
+                setIsAuthenticated(false);
+              }}
+              className="bg-red-900/40 hover:bg-red-800/60 text-red-300 px-3 py-1.5 rounded-lg text-xs border border-red-800/50 transition"
+            >
+              Lock Session
+            </button>
+            <Link href="/" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm border border-gray-700 transition">
+              ← Back to Player Portal
+            </Link>
+          </div>
         </div>
 
         {/* SECTION 1: Register Game Studio */}
@@ -158,6 +244,7 @@ export default function DeveloperStudio() {
                 <input
                   type="text"
                   required
+                  placeholder="e.g. game_palworld_mech_arena"
                   value={gameId}
                   onChange={(e) => setGameId(e.target.value)}
                   className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
@@ -168,6 +255,7 @@ export default function DeveloperStudio() {
                 <input
                   type="text"
                   required
+                  placeholder="e.g. skin_cyber_01"
                   value={itemId}
                   onChange={(e) => setItemId(e.target.value)}
                   className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
@@ -203,6 +291,7 @@ export default function DeveloperStudio() {
               <input
                 type="text"
                 required
+                placeholder="e.g. Neon Mech Armor"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
