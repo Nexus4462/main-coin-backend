@@ -543,6 +543,7 @@ async def add_game_cosmetic(req: GameCosmeticRequest, db: Session = Depends(get_
     
     return {"status": "SUCCESS", "item_key": item_key}
 
+@app.get("/api/v1/store/catalog", tags=["Developer Store"])
 @app.get("/api/v1/store/catalogue", tags=["Developer Store"])
 async def get_full_store_catalogue(db: Session = Depends(get_db)):
     core_items = db.query(StoreCatalogModel).filter(StoreCatalogModel.is_active == True).all()
