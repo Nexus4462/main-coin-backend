@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 game_economy.db
+.vercel
+.env*

@@ -37,8 +37,9 @@ export async function fetchPlayerProfile(playerId: string): Promise<PlayerProfil
 }
 
 export async function fetchStoreCatalog(): Promise<StoreCatalog> {
-  const res = await fetch(`${BASE_URL}/api/v1/store/catalogue`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch catalogue");
+  // Fixed route spelling from /catalogue to /catalog
+  const res = await fetch(`${BASE_URL}/api/v1/store/catalog`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch catalog");
   return res.json();
 }
 
