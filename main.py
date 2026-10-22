@@ -330,7 +330,7 @@ class WalletLinkRequest(BaseModel):
 class RegisterGameRequest(BaseModel):
     developer_id: str
     game_name: str
-    webhook_url: str
+    webhook_url: Optional[str] = None
 
 class GameCosmeticRequest(BaseModel):
     game_id: str
