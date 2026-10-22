@@ -327,11 +327,6 @@ class DeveloperModel(Base):
 # Ensure tables are created
 Base.metadata.create_all(bind=engine)
 
-class RegisterDeveloperRequest(BaseModel):
-    developer_id: str
-    game_name: str
-    webhook_url: str | None = None
-
 class DeveloperItemCreateRequest(BaseModel):
     item_id: str
     name: str
