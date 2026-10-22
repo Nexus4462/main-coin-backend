@@ -3,181 +3,223 @@
 import { useState } from "react";
 import Link from "next/link";
 
-export default function DevelopersPage() {
-  const [developerKey, setDeveloperKey] = useState("");
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [keyError, setKeyError] = useState<string | null>(null);
+const BASE_URL = "https://main-coin-backend.onrender.com";
+const DEV_KEY = "nexus_dev_secret_2026";
 
+export default function DeveloperStudio() {
+  // Developer Registration State
+  const [developerId, setDeveloperId] = useState("");
+  const [gameName, setGameName] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [regStatus, setRegStatus] = useState<string | null>(null);
+
+  // Cosmetic Publishing State
   const [gameId, setGameId] = useState("game_palworld_mech_arena");
-  const [itemId, setItemId] = useState("");
-  const [priceNex, setPriceNex] = useState(100);
-  const [displayName, setDisplayName] = useState("");
+  const [itemId, setItemId] = useState("skin_cyber_01");
+  const [priceNex, setPriceNex] = useState("100");
   const [category, setCategory] = useState("Skin");
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("Neon Mech Armor");
+  const [pubStatus, setPubStatus] = useState<string | null>(null);
 
-  const handleDevLogin = (e: React.FormEvent) => {
+  // 1. Handle Game Registration
+  const handleRegisterGame = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (developerKey === "nexus_dev_secret_2026") {
-      setIsAuthenticated(true);
-      setKeyError(null);
-    } else {
-      setKeyError("❌ Invalid Developer Key. Access Denied.");
-    }
-  };
-
-  const handlePublish = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setStatusMessage("Publishing to NEXUS Ecosystem...");
-
+    setRegStatus("Registering game...");
     try {
-      const res = await fetch("https://main-coin-backend.onrender.com/api/v1/developer/cosmetics", {
+      const res = await fetch(`${BASE_URL}/api/v1/developer/register`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Developer-Key": developerKey,
+          "X-Developer-Key": DEV_KEY,
         },
         body: JSON.stringify({
-          game_id: gameId,
-          item_id: itemId,
-          price_nex: priceNex,
-          display_name: displayName,
-          category: category,
+          developer_id: developerId,
+          game_name: gameName,
+          webhook_url: webhookUrl || null,
         }),
       });
 
       const data = await res.json();
       if (res.ok) {
-        setStatusMessage(`✅ Published! Item Key: ${data.item_key || `${gameId}:${itemId}`}`);
+        setRegStatus(`✅ Registered! Assigned Game ID: ${data.game_id}`);
+        setGameId(data.game_id); // Auto-fill the published cosmetic form with the new Game ID
       } else {
-        setStatusMessage(`❌ Error: ${data.detail || "Failed to publish item."}`);
+        setRegStatus(`❌ Registration failed: ${data.detail || "Error"}`);
       }
     } catch (err) {
-      setStatusMessage("❌ Network error connecting to backend.");
+      setRegStatus("❌ Network error connecting to backend.");
+    }
+  };
+
+  // 2. Handle Cosmetic Publishing
+  const handlePublishCosmetic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPubStatus("Publishing item...");
+    try {
+      const res = await fetch(`${BASE_URL}/api/v1/developer/cosmetics/add`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Developer-Key": DEV_KEY,
+        },
+        body: JSON.stringify({
+          game_id: gameId,
+          item_id: itemId,
+          item_name: displayName,
+          price_nex: parseFloat(priceNex),
+          category: category,
+          asset_url: "https://cdn.nexus.io/assets/cosmetic.png",
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setPubStatus(`✅ Published! Item Key: ${data.item_key}`);
+      } else {
+        setPubStatus(`❌ Failed to publish: ${data.detail || "Game ID not registered"}`);
+      }
+    } catch (err) {
+      setPubStatus("❌ Network error connecting to backend.");
     }
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-8 font-sans">
+    <div className="min-h-screen bg-[#0b0e14] text-white p-8 font-sans">
       <div className="max-w-4xl mx-auto space-y-8">
         
-        <header className="flex justify-between items-center border-b border-slate-800 pb-6">
+        {/* Header */}
+        <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-purple-400">DEVELOPER STUDIO PORTAL</h1>
-            <p className="text-slate-400 text-sm">Authenticated Store Publishing & Economy Integration</p>
+            <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-500">
+              DEVELOPER STUDIO PORTAL
+            </h1>
+            <p className="text-gray-400 text-sm">Authenticated Store Publishing & Economy Integration</p>
           </div>
-          <Link href="/" className="bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-sm font-bold px-4 py-2 rounded-lg transition">
+          <Link href="/" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm border border-gray-700 transition">
             ← Back to Player Portal
           </Link>
-        </header>
+        </div>
 
-        {!isAuthenticated ? (
-          <div className="max-w-md mx-auto my-16 bg-slate-900 border border-purple-900/50 rounded-2xl p-8 space-y-6 text-center">
-            <h2 className="text-xl font-bold text-purple-300">Developer Verification</h2>
-            <p className="text-slate-400 text-sm">Enter your X-Developer-Key secret to unlock item publishing capabilities.</p>
-            
-            <form onSubmit={handleDevLogin} className="space-y-4">
-              <input
-                type="password"
-                placeholder="X-Developer-Key Secret"
-                value={developerKey}
-                onChange={(e) => setDeveloperKey(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-sm text-slate-100 font-mono focus:outline-none focus:border-purple-500"
-              />
-              <button 
-                type="submit" 
-                className="w-full bg-purple-700 hover:bg-purple-600 text-white font-bold py-3 rounded-lg transition"
-              >
-                Authenticate Dev Studio
-              </button>
-            </form>
-
-            {keyError && (
-              <div className="bg-red-950/60 border border-red-800 text-red-300 px-4 py-3 rounded-lg text-xs font-mono text-left">
-                {keyError}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="bg-slate-900 border border-purple-900/40 rounded-2xl p-8 space-y-6">
-            <h2 className="text-xl font-bold text-slate-100">Publish New Game Cosmetic</h2>
-            
-            {statusMessage && (
-              <div className="bg-purple-950/60 border border-purple-800 text-purple-300 px-4 py-3 rounded-lg text-sm font-mono">
-                {statusMessage}
-              </div>
-            )}
-
-            <form onSubmit={handlePublish} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-slate-400 uppercase font-mono block mb-1">Game ID</label>
-                  <input
-                    type="text"
-                    value={gameId}
-                    onChange={(e) => setGameId(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm font-mono"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 uppercase font-mono block mb-1">Item ID</label>
-                  <input
-                    type="text"
-                    placeholder="skin_cyber_01"
-                    value={itemId}
-                    onChange={(e) => setItemId(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm font-mono"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-slate-400 uppercase font-mono block mb-1">Price (NEX)</label>
-                  <input
-                    type="number"
-                    value={priceNex}
-                    onChange={(e) => setPriceNex(Number(e.target.value))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm font-mono"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400 uppercase font-mono block mb-1">Category</label>
-                  <input
-                    type="text"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm font-mono"
-                    required
-                  />
-                </div>
-              </div>
-
+        {/* SECTION 1: Register Game Studio */}
+        <div className="bg-[#131722] border border-gray-800 rounded-xl p-6 space-y-4">
+          <h2 className="text-xl font-bold text-purple-400">1. Register Game Studio Title</h2>
+          <form onSubmit={handleRegisterGame} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-xs text-slate-400 uppercase font-mono block mb-1">Display Name</label>
+                <label className="block text-xs font-mono text-gray-400 mb-1">DEVELOPER ID</label>
                 <input
                   type="text"
-                  placeholder="Neon Mech Armor"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm font-mono"
                   required
+                  placeholder="e.g. dev_studio_alpha"
+                  value={developerId}
+                  onChange={(e) => setDeveloperId(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-mono text-gray-400 mb-1">GAME NAME</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Palworld Mech Arena"
+                  value={gameName}
+                  onChange={(e) => setGameName(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono text-gray-400 mb-1">WEBHOOK URL (OPTIONAL)</label>
+              <input
+                type="text"
+                placeholder="https://api.yourstudio.com/nexus/webhooks"
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
+              />
+            </div>
+            <button
+              type="submit"
+              className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 font-bold py-2.5 rounded-lg transition"
+            >
+              Register Studio Title
+            </button>
+            {regStatus && <p className="text-sm font-mono text-center text-cyan-400 mt-2">{regStatus}</p>}
+          </form>
+        </div>
 
-              <button
-                type="submit"
-                className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-lg transition"
-              >
-                Publish Cosmetic (13% Burn Sink)
-              </button>
-            </form>
-          </div>
-        )}
+        {/* SECTION 2: Publish Cosmetic */}
+        <div className="bg-[#131722] border border-gray-800 rounded-xl p-6 space-y-4">
+          <h2 className="text-xl font-bold text-purple-400">2. Publish New Game Cosmetic</h2>
+          <form onSubmit={handlePublishCosmetic} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-mono text-gray-400 mb-1">GAME ID</label>
+                <input
+                  type="text"
+                  required
+                  value={gameId}
+                  onChange={(e) => setGameId(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-mono text-gray-400 mb-1">ITEM ID</label>
+                <input
+                  type="text"
+                  required
+                  value={itemId}
+                  onChange={(e) => setItemId(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-mono text-gray-400 mb-1">PRICE (NEX)</label>
+                <input
+                  type="number"
+                  required
+                  value={priceNex}
+                  onChange={(e) => setPriceNex(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-mono text-gray-400 mb-1">CATEGORY</label>
+                <input
+                  type="text"
+                  required
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-mono text-gray-400 mb-1">DISPLAY NAME</label>
+              <input
+                type="text"
+                required
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="w-full bg-[#0b0e14] border border-gray-700 rounded p-2 text-sm text-white focus:outline-none focus:border-purple-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-lg transition"
+            >
+              Publish Cosmetic (13% Burn Sink)
+            </button>
+            {pubStatus && <p className="text-sm font-mono text-center text-cyan-400 mt-2">{pubStatus}</p>}
+          </form>
+        </div>
 
       </div>
-    </main>
+    </div>
   );
 }
