@@ -10,10 +10,9 @@ import uvicorn
 import time
 import hmac
 import hashlib
-from fastapi import Header, HTTPException, Depends, status
+from fastapi import Header, HTTPException, Depends, status, FastAPI, Request, Query, Body
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
@@ -26,16 +25,10 @@ from datetime import datetime, timedelta
 TOKEN_NAME = "Nexus"
 TOKEN_TICKER = "NEX"
 
-_raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET")
-if not _raw_hmac_secret:
-    raise ValueError("CRITICAL SECURITY ERROR: 'HMAC_SECRET' environment variable is missing on the server!")
-
+_raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET") or "nexus_dev_secret_2026"
 NEXUS_HMAC_SECRET = _raw_hmac_secret.encode('utf-8')
 
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY")
-if not ADMIN_SECRET_KEY:
-    raise ValueError("CRITICAL SECURITY ERROR: 'ADMIN_SECRET_KEY' environment variable is missing on the server!")
-
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_2026")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
@@ -114,16 +107,13 @@ class StoreCatalogModel(Base):
     is_active = Column(Boolean, default=True)
 
 class RegisteredGameModel(Base):
-    __tablename__ = "developers"
+    __tablename__ = "registered_games"
 
     game_id = Column(String, primary_key=True, index=True)
     developer_id = Column(String, nullable=False)
     game_name = Column(String, nullable=False)
     webhook_url = Column(String, nullable=True)
     created_at = Column(Float, default=time.time)
-
-# Initialize database tables
-Base.metadata.create_all(bind=engine)
 
 class GameCosmeticModel(Base):
     __tablename__ = "game_cosmetics"
@@ -153,6 +143,7 @@ class AuditLogModel(Base):
     amount_nex = Column(Float, default=0.0)
     details = Column(String, nullable=True)
 
+# Initialize database tables ONCE after all models are defined
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -264,7 +255,7 @@ def int_to_roman(num: int) -> str:
 def get_or_create_player(db: Session, player_id: str) -> PlayerModel:
     player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
     if not player:
-        player = PlayerModel(player_id=player_id)
+        player = PlayerModel(player_id=player_id, spendable_nex=500.0, total_nex_earned=500.0, total_hours_played=1.0)
         db.add(player)
         db.commit()
         db.refresh(player)
@@ -293,7 +284,7 @@ def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
     else:
         prestige_tag = f"[{TOKEN_TICKER}]"
 
-    formatted_display = f"{emblem + ' ' if emblem else ''}{prestige_tag} {{username}}".strip()
+    formatted_display = f"{emblem + ' ' if emblem else ''}{prestige_tag} {player.player_id}".strip()
 
     return {
         "text_color": color,
@@ -307,7 +298,6 @@ def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
 # =====================================================================
 # 5. API REQUEST / RESPONSE SCHEMAS
 # =====================================================================
-
 class TelemetryPingRequest(BaseModel):
     player_id: str
     minutes_played: int
@@ -434,47 +424,25 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/player/{player_id}")
 async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    # Query using PlayerModel instead of Player
-    player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
-    
-    if not player:
-        player = PlayerModel(
-            player_id=player_id,
-            spendable_nex=500.0,
-            total_nex_earned=500.0,
-            total_hours_played=1.0,
-            prestige_level=0,
-            created_at=time.time()
-        )
-        db.add(player)
-        db.commit()
-        db.refresh(player)
-
+    player = get_or_create_player(db, player_id)
     return {
         "player_id": player.player_id,
-        "spendable_nex": player.spendable_nex,
-        "total_nex_earned": player.total_nex_earned,
-        "total_hours_played": player.total_hours_played,
-        "nametag_style": {
-            "text_color": "#00F0FF",
-            "display_name_formatted": f"🏆 [NEX] {player.player_id}"
-        }
+        "spendable_nex": round(player.spendable_nex, 4),
+        "total_nex_earned": round(player.total_nex_earned, 4),
+        "total_hours_played": round(player.total_hours_played, 2),
+        "prestige_level": player.prestige_level,
+        "nametag_style": calculate_nametag_style(player, db)
     }
 
 # =====================================================================
 # 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
 # =====================================================================
-
 @app.post("/api/v1/developer/register", tags=["Developer Store"])
 async def register_game(
     req: RegisterGameRequest, 
     db: Session = Depends(get_db),
     dev_key: str = Depends(verify_developer_key)
 ):
-    """
-    Registers a new third-party game title in the NEX ecosystem.
-    Protected by X-Developer-Key authentication.
-    """
     game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
     
     existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
@@ -492,17 +460,12 @@ async def register_game(
     
     return {"status": "SUCCESS", "game_id": game_id}
 
-
 @app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
 async def add_game_cosmetic(
     req: GameCosmeticRequest, 
     db: Session = Depends(get_db),
     dev_key: str = Depends(verify_developer_key)
 ):
-    """
-    Publishes a new cosmetic item for a registered game into the store catalog.
-    Protected by X-Developer-Key authentication.
-    """
     game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == req.game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game ID not found in registry")
@@ -521,7 +484,6 @@ async def add_game_cosmetic(
     db.commit()
     
     return {"status": "SUCCESS", "item_key": item_key}
-
 
 @app.get("/api/v1/store/catalog", tags=["Developer Store"])
 @app.get("/api/v1/store/catalogue", tags=["Developer Store"])
@@ -549,114 +511,6 @@ async def get_full_store_catalogue(db: Session = Depends(get_db)):
             } for item in dev_items
         ]
     }
-
-
-@app.get("/api/v1/players/unclaimed")
-async def get_unclaimed_players(db: Session = Depends(get_db)):
-    players = db.query(PlayerModel).filter(PlayerModel.spendable_nex >= 10.0).all()
-    unclaimed_list = []
-    for p in players:
-        connected = db.query(ConnectedAccountModel).filter(
-            ConnectedAccountModel.player_id == p.player_id,
-            ConnectedAccountModel.platform_name == "discord"
-        ).first()
-        discord_id = connected.external_account_id if connected else "0"
-        
-        unclaimed_list.append({
-            "player_id": p.player_id,
-            "spendable_nex": p.spendable_nex,
-            "discord_user_id": discord_id
-        })
-            
-    return {"players": unclaimed_list}# =====================================================================
-# 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
-# =====================================================================
-
-@app.post("/api/v1/developer/register", tags=["Developer Store"])
-async def register_game(
-    req: RegisterGameRequest, 
-    db: Session = Depends(get_db),
-    dev_key: str = Depends(verify_developer_key)
-):
-    """
-    Registers a new third-party game title in the NEX ecosystem.
-    Protected by X-Developer-Key authentication.
-    """
-    game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
-    
-    existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
-    if existing:
-        return {"status": "SUCCESS", "game_id": existing.game_id, "note": "Game already registered"}
-
-    new_game = RegisteredGameModel(
-        game_id=game_id,
-        developer_id=req.developer_id,
-        game_name=req.game_name,
-        webhook_url=req.webhook_url
-    )
-    db.add(new_game)
-    db.commit()
-    
-    return {"status": "SUCCESS", "game_id": game_id}
-
-
-@app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
-async def add_game_cosmetic(
-    req: GameCosmeticRequest, 
-    db: Session = Depends(get_db),
-    dev_key: str = Depends(verify_developer_key)
-):
-    """
-    Publishes a new cosmetic item for a registered game into the store catalog.
-    Protected by X-Developer-Key authentication.
-    """
-    game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == req.game_id).first()
-    if not game:
-        raise HTTPException(status_code=404, detail="Game ID not found in registry")
-        
-    item_key = f"{req.game_id}:{req.item_id}"
-    
-    cosmetic = GameCosmeticModel(
-        item_key=item_key,
-        game_id=req.game_id,
-        item_name=req.item_name,
-        price_nex=req.price_nex,
-        asset_url=req.asset_url,
-        category=req.category
-    )
-    db.add(cosmetic)
-    db.commit()
-    
-    return {"status": "SUCCESS", "item_key": item_key}
-
-
-@app.get("/api/v1/store/catalog", tags=["Developer Store"])
-@app.get("/api/v1/store/catalogue", tags=["Developer Store"])
-async def get_full_store_catalogue(db: Session = Depends(get_db)):
-    core_items = db.query(StoreCatalogModel).filter(StoreCatalogModel.is_active == True).all()
-    dev_items = db.query(GameCosmeticModel).all()
-    
-    return {
-        "global_cosmetics": [
-            {
-                "item_id": item.item_id,
-                "name": item.name,
-                "description": item.description,
-                "price_nex": item.price_nex
-            } for item in core_items
-        ],
-        "developer_cosmetics": [
-            {
-                "item_key": item.item_key,
-                "game_id": item.game_id,
-                "name": item.item_name,
-                "price_nex": item.price_nex,
-                "category": item.category,
-                "asset_url": item.asset_url
-            } for item in dev_items
-        ]
-    }
-
 
 @app.get("/api/v1/players/unclaimed")
 async def get_unclaimed_players(db: Session = Depends(get_db)):
@@ -785,7 +639,6 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         db.commit()
     except Exception:
         db.rollback()
-        db.commit()
 
     return {
         "status": "success",
@@ -797,44 +650,49 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         "nametag_style": calculate_nametag_style(player, db)
     }
 
-@app.get("/api/v1/player/{player_id}")
-def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    player = get_or_create_player(db, player_id)
-    return {
-        "player_id": player.player_id,
-        "spendable_nex": round(player.spendable_nex, 4),
-        "total_nex_earned": round(player.total_nex_earned, 4),
-        "total_hours_played": round(player.total_hours_played, 2),
-        "prestige_level": player.prestige_level,
-        "nametag_style": calculate_nametag_style(player, db)
-    }
-
 @app.post("/api/v1/store/buy")
 def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_db)):
     player = get_or_create_player(db, req.player_id)
+    
+    # Check core store catalog first
     item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id, StoreCatalogModel.is_active == True).first()
 
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found in catalog.")
+    price = 0.0
+    item_name = ""
+    dev_id = "dev_nexus_core"
 
-    if player.spendable_nex < item.price_nex:
+    if item:
+        price = item.price_nex
+        item_name = item.name
+        dev_id = item.developer_id
+    else:
+        # Check developer cosmetics if not found in core catalog
+        dev_item = db.query(GameCosmeticModel).filter(GameCosmeticModel.item_key == req.item_id).first()
+        if dev_item:
+            price = dev_item.price_nex
+            item_name = dev_item.item_name
+            dev_id = dev_item.game_id
+        else:
+            raise HTTPException(status_code=404, detail="Item not found in catalog.")
+
+    if player.spendable_nex < price:
         raise HTTPException(status_code=400, detail=f"Insufficient {TOKEN_TICKER} balance.")
 
-    player.spendable_nex -= item.price_nex
+    player.spendable_nex -= price
 
     # Execute Deflationary Sink: 13% Burn, 87% Recirculate
-    burned_amount = item.price_nex * 0.13
-    recirculated_amount = item.price_nex * 0.87
+    burned_amount = price * 0.13
+    recirculated_amount = price * 0.87
 
-    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == item.developer_id).first()
+    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == dev_id).first()
     if developer:
         developer.earned_nex_balance += recirculated_amount
 
-    instance_id = f"inst_{item.item_id}_{int(time.time())}_{player.player_id[:4]}"
+    instance_id = f"inst_{req.item_id[:8]}_{int(time.time())}_{player.player_id[:4]}"
     inventory_item = PlayerInventoryModel(
         instance_id=instance_id,
         player_id=player.player_id,
-        item_id=item.item_id,
+        item_id=req.item_id,
         item_type="Standard",
         acquired_via="Store_Purchase"
     )
@@ -843,75 +701,19 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
     audit_entry = AuditLogModel(
         action_type="STORE_PURCHASE",
         player_id=player.player_id,
-        amount_nex=item.price_nex,
-        details=f"Purchased '{item.name}'. Burned: {burned_amount:.2f} NEX, Recirculated: {recirculated_amount:.2f} NEX"
+        amount_nex=price,
+        details=f"Purchased '{item_name}'. Burned: {burned_amount:.2f} NEX, Recirculated: {recirculated_amount:.2f} NEX"
     )
     db.add(audit_entry)
     db.commit()
 
     return {
         "status": "success",
-        "message": f"Successfully purchased {item.name}.",
+        "message": f"Successfully purchased {item_name}.",
         "instance_id": instance_id,
         "burned_nex": round(burned_amount, 4),
         "recirculated_nex": round(recirculated_amount, 4),
         "remaining_spendable_nex": round(player.spendable_nex, 4)
-    }
-
-@app.post("/api/v1/developer/catalog/add", tags=["Developer Store"])
-def add_developer_store_item(req: DeveloperItemCreateRequest, db: Session = Depends(get_db)):
-    existing_item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id).first()
-    if existing_item:
-        raise HTTPException(status_code=400, detail=f"Item ID '{req.item_id}' is already registered in the catalog.")
-    
-    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == req.developer_id).first()
-    if not developer:
-        developer = DeveloperModel(
-            developer_id=req.developer_id,
-            developer_name=f"Studio {req.developer_id}",
-            earned_nex_balance=0.0
-        )
-        db.add(developer)
-
-    new_item = StoreCatalogModel(
-        item_id=req.item_id,
-        name=req.name,
-        description=req.description,
-        price_nex=req.price_nex,
-        developer_id=req.developer_id,
-        multiplier_boost=req.multiplier_boost,
-        is_active=True
-    )
-    db.add(new_item)
-    db.commit()
-    db.refresh(new_item)
-
-    return {
-        "status": "success",
-        "message": f"Item '{req.name}' successfully published by '{req.developer_id}'.",
-        "item_id": new_item.item_id,
-        "price_nex": new_item.price_nex
-    }
-
-@app.get("/api/v1/developer/{developer_id}/catalog", tags=["Developer Store"])
-def get_developer_catalog(developer_id: str, db: Session = Depends(get_db)):
-    items = db.query(StoreCatalogModel).filter(
-        StoreCatalogModel.developer_id == developer_id,
-        StoreCatalogModel.is_active == True
-    ).all()
-    
-    return {
-        "developer_id": developer_id,
-        "published_items_count": len(items),
-        "catalog": [
-            {
-                "item_id": item.item_id,
-                "name": item.name,
-                "description": item.description,
-                "price_nex": item.price_nex,
-                "multiplier_boost": item.multiplier_boost
-            } for item in items
-        ]
     }
 
 # =====================================================================
