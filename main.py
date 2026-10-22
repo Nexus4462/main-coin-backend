@@ -114,14 +114,16 @@ class StoreCatalogModel(Base):
     is_active = Column(Boolean, default=True)
 
 class RegisteredGameModel(Base):
-    __tablename__ = "registered_games"
+    __tablename__ = "developers"
 
     game_id = Column(String, primary_key=True, index=True)
     developer_id = Column(String, nullable=False)
     game_name = Column(String, nullable=False)
     webhook_url = Column(String, nullable=True)
-    status = Column(String, default="ACTIVE")
-    registered_at = Column(Float, default=time.time)
+    created_at = Column(Float, default=time.time)
+
+# Initialize database tables
+Base.metadata.create_all(bind=engine)
 
 class GameCosmeticModel(Base):
     __tablename__ = "game_cosmetics"
@@ -305,6 +307,7 @@ def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
 # =====================================================================
 # 5. API REQUEST / RESPONSE SCHEMAS
 # =====================================================================
+
 class TelemetryPingRequest(BaseModel):
     player_id: str
     minutes_played: int
@@ -315,17 +318,6 @@ class TelemetryPingRequest(BaseModel):
 class StorePurchaseRequest(BaseModel):
     player_id: str
     item_id: str
-
-class DeveloperModel(Base):
-    __tablename__ = "developers"
-
-    developer_id = Column(String, primary_key=True, index=True)
-    game_name = Column(String, nullable=False)
-    webhook_url = Column(String, nullable=True)
-    created_at = Column(Float, default=time.time)
-
-# Ensure tables are created
-Base.metadata.create_all(bind=engine)
 
 class DeveloperItemCreateRequest(BaseModel):
     item_id: str
