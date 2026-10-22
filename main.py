@@ -316,6 +316,22 @@ class StorePurchaseRequest(BaseModel):
     player_id: str
     item_id: str
 
+class DeveloperModel(Base):
+    __tablename__ = "developers"
+
+    developer_id = Column(String, primary_key=True, index=True)
+    game_name = Column(String, nullable=False)
+    webhook_url = Column(String, nullable=True)
+    created_at = Column(Float, default=time.time)
+
+# Ensure tables are created
+Base.metadata.create_all(bind=engine)
+
+class RegisterDeveloperRequest(BaseModel):
+    developer_id: str
+    game_name: str
+    webhook_url: str | None = None
+
 class DeveloperItemCreateRequest(BaseModel):
     item_id: str
     name: str
@@ -461,6 +477,7 @@ async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
 # =====================================================================
 # 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
 # =====================================================================
+
 @app.post("/api/v1/developer/register", tags=["Developer Store"])
 async def register_game(
     req: RegisterGameRequest, 
@@ -473,12 +490,11 @@ async def register_game(
     """
     game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
     
-    # Check if game already exists
-    existing = db.query(RegisteredGame).filter(RegisteredGame.game_id == game_id).first()
+    existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
     if existing:
         return {"status": "SUCCESS", "game_id": existing.game_id, "note": "Game already registered"}
 
-    new_game = RegisteredGame(
+    new_game = RegisteredGameModel(
         game_id=game_id,
         developer_id=req.developer_id,
         game_name=req.game_name,
@@ -500,30 +516,6 @@ async def add_game_cosmetic(
     Publishes a new cosmetic item for a registered game into the store catalog.
     Protected by X-Developer-Key authentication.
     """
-    item_key = f"{req.game_id}:{req.item_id}"
-    
-    # Check if game exists
-    game = db.query(RegisteredGame).filter(RegisteredGame.game_id == req.game_id).first()
-    if not game:
-        raise HTTPException(status_code=404, detail="Game ID not registered")
-
-    new_cosmetic = StoreCatalogItem(
-        item_key=item_key,
-        game_id=req.game_id,
-        item_id=req.item_id,
-        name=req.item_name,
-        price_nex=req.price_nex,
-        category=req.category,
-        asset_url=req.asset_url,
-        is_developer_item=True
-    )
-    db.merge(new_cosmetic)
-    db.commit()
-
-    return {"status": "SUCCESS", "item_key": item_key}
-
-@app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
-async def add_game_cosmetic(req: GameCosmeticRequest, db: Session = Depends(get_db)):
     game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == req.game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game ID not found in registry")
@@ -542,6 +534,7 @@ async def add_game_cosmetic(req: GameCosmeticRequest, db: Session = Depends(get_
     db.commit()
     
     return {"status": "SUCCESS", "item_key": item_key}
+
 
 @app.get("/api/v1/store/catalog", tags=["Developer Store"])
 @app.get("/api/v1/store/catalogue", tags=["Developer Store"])
@@ -569,6 +562,114 @@ async def get_full_store_catalogue(db: Session = Depends(get_db)):
             } for item in dev_items
         ]
     }
+
+
+@app.get("/api/v1/players/unclaimed")
+async def get_unclaimed_players(db: Session = Depends(get_db)):
+    players = db.query(PlayerModel).filter(PlayerModel.spendable_nex >= 10.0).all()
+    unclaimed_list = []
+    for p in players:
+        connected = db.query(ConnectedAccountModel).filter(
+            ConnectedAccountModel.player_id == p.player_id,
+            ConnectedAccountModel.platform_name == "discord"
+        ).first()
+        discord_id = connected.external_account_id if connected else "0"
+        
+        unclaimed_list.append({
+            "player_id": p.player_id,
+            "spendable_nex": p.spendable_nex,
+            "discord_user_id": discord_id
+        })
+            
+    return {"players": unclaimed_list}# =====================================================================
+# 7. MULTI-GAME DEVELOPER & COSMETIC PORTAL ENDPOINTS
+# =====================================================================
+
+@app.post("/api/v1/developer/register", tags=["Developer Store"])
+async def register_game(
+    req: RegisterGameRequest, 
+    db: Session = Depends(get_db),
+    dev_key: str = Depends(verify_developer_key)
+):
+    """
+    Registers a new third-party game title in the NEX ecosystem.
+    Protected by X-Developer-Key authentication.
+    """
+    game_id = f"game_{req.game_name.lower().replace(' ', '_')}"
+    
+    existing = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == game_id).first()
+    if existing:
+        return {"status": "SUCCESS", "game_id": existing.game_id, "note": "Game already registered"}
+
+    new_game = RegisteredGameModel(
+        game_id=game_id,
+        developer_id=req.developer_id,
+        game_name=req.game_name,
+        webhook_url=req.webhook_url
+    )
+    db.add(new_game)
+    db.commit()
+    
+    return {"status": "SUCCESS", "game_id": game_id}
+
+
+@app.post("/api/v1/developer/cosmetics/add", tags=["Developer Store"])
+async def add_game_cosmetic(
+    req: GameCosmeticRequest, 
+    db: Session = Depends(get_db),
+    dev_key: str = Depends(verify_developer_key)
+):
+    """
+    Publishes a new cosmetic item for a registered game into the store catalog.
+    Protected by X-Developer-Key authentication.
+    """
+    game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == req.game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game ID not found in registry")
+        
+    item_key = f"{req.game_id}:{req.item_id}"
+    
+    cosmetic = GameCosmeticModel(
+        item_key=item_key,
+        game_id=req.game_id,
+        item_name=req.item_name,
+        price_nex=req.price_nex,
+        asset_url=req.asset_url,
+        category=req.category
+    )
+    db.add(cosmetic)
+    db.commit()
+    
+    return {"status": "SUCCESS", "item_key": item_key}
+
+
+@app.get("/api/v1/store/catalog", tags=["Developer Store"])
+@app.get("/api/v1/store/catalogue", tags=["Developer Store"])
+async def get_full_store_catalogue(db: Session = Depends(get_db)):
+    core_items = db.query(StoreCatalogModel).filter(StoreCatalogModel.is_active == True).all()
+    dev_items = db.query(GameCosmeticModel).all()
+    
+    return {
+        "global_cosmetics": [
+            {
+                "item_id": item.item_id,
+                "name": item.name,
+                "description": item.description,
+                "price_nex": item.price_nex
+            } for item in core_items
+        ],
+        "developer_cosmetics": [
+            {
+                "item_key": item.item_key,
+                "game_id": item.game_id,
+                "name": item.item_name,
+                "price_nex": item.price_nex,
+                "category": item.category,
+                "asset_url": item.asset_url
+            } for item in dev_items
+        ]
+    }
+
 
 @app.get("/api/v1/players/unclaimed")
 async def get_unclaimed_players(db: Session = Depends(get_db)):
