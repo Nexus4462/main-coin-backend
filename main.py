@@ -658,19 +658,21 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
 
     price = 0.0
     item_name = ""
-    dev_id = "dev_nexus_core"
+    target_dev_id = ""
 
     if item:
         price = item.price_nex
         item_name = item.name
-        dev_id = item.developer_id
+        target_dev_id = item.developer_id
     else:
         # Check developer cosmetics if not found in core catalog
         dev_item = db.query(GameCosmeticModel).filter(GameCosmeticModel.item_key == req.item_id).first()
         if dev_item:
             price = dev_item.price_nex
             item_name = dev_item.item_name
-            dev_id = dev_item.game_id
+            # Map game_id back to registered game to locate developer_id
+            reg_game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == dev_item.game_id).first()
+            target_dev_id = reg_game.developer_id if reg_game else dev_item.game_id
         else:
             raise HTTPException(status_code=404, detail="Item not found in catalog.")
 
@@ -679,13 +681,21 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
 
     player.spendable_nex -= price
 
-    # Execute Deflationary Sink: 13% Burn, 87% Recirculate
+    # Deflationary Sink: 13% Burn, 87% Recirculate
     burned_amount = price * 0.13
     recirculated_amount = price * 0.87
 
-    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == dev_id).first()
-    if developer:
-        developer.earned_nex_balance += recirculated_amount
+    # Allocate 87% recirculation to developer account
+    developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == target_dev_id).first()
+    if not developer:
+        developer = DeveloperModel(
+            developer_id=target_dev_id,
+            developer_name=f"Studio {target_dev_id}",
+            earned_nex_balance=0.0
+        )
+        db.add(developer)
+
+    developer.earned_nex_balance += recirculated_amount
 
     instance_id = f"inst_{req.item_id[:8]}_{int(time.time())}_{player.player_id[:4]}"
     inventory_item = PlayerInventoryModel(
@@ -701,7 +711,7 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
         action_type="STORE_PURCHASE",
         player_id=player.player_id,
         amount_nex=price,
-        details=f"Purchased '{item_name}'. Burned: {burned_amount:.2f} NEX, Recirculated: {recirculated_amount:.2f} NEX"
+        details=f"Purchased '{item_name}'. Burned: {burned_amount:.2f} NEX, Recirculated: {recirculated_amount:.2f} NEX to {target_dev_id}"
     )
     db.add(audit_entry)
     db.commit()
