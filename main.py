@@ -156,6 +156,11 @@ class AuditLogModel(Base):
     amount_nex = Column(Float, default=0.0)
     details = Column(String, nullable=True)
 
+class LinkVerifyRequest(BaseModel):
+    link_code: str
+    discord_id: str
+    discord_tag: str
+
 # Initialize database tables ONCE after all models are defined
 Base.metadata.create_all(bind=engine)
 
