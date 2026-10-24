@@ -383,28 +383,29 @@ def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
     if not link_record:
         raise HTTPException(status_code=400, detail="Invalid or expired link code.")
 
-    # 2. Get or create the target player
-    player = get_or_create_player(db, link_record.player_id)
+    target_player_id = link_record.player_id
 
-    # 3. Bind Discord identity directly to PlayerModel
-    player.discord_id = str(req.discord_id)
-    player.discord_tag = str(req.discord_tag)
+    # 2. Ensure player record exists in PostgreSQL
+    get_or_create_player(db, target_player_id)
 
-    # 4. Mark code as used
+    # 3. Force direct UPDATE on the player row in PostgreSQL
+    db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).update({
+        "discord_id": str(req.discord_id),
+        "discord_tag": str(req.discord_tag)
+    }, synchronize_session=False)
+
+    # 4. Mark code as consumed
     link_record.is_used = True
 
-    # 5. Force commit to PostgreSQL table
-    db.add(player)
-    db.add(link_record)
+    # 5. Commit database transaction
     db.commit()
-    db.refresh(player)
 
     return {
         "status": "success",
-        "player_id": player.player_id,
-        "discord_id": player.discord_id,
-        "discord_tag": player.discord_tag,
-        "message": f"Successfully linked {player.discord_tag} to player {player.player_id}!"
+        "player_id": target_player_id,
+        "discord_id": str(req.discord_id),
+        "discord_tag": str(req.discord_tag),
+        "message": f"Successfully linked {req.discord_tag} to player {target_player_id}!"
     }
 
 @app.post("/api/wallet/link")
