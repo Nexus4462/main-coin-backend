@@ -180,6 +180,9 @@ class LinkVerifyRequest(BaseModel):
     discord_id: str
     discord_tag: str
 
+class LinkUnlinkRequest(BaseModel):
+    discord_id: str
+
 # Initialize database tables ONCE after all models are defined
 Base.metadata.create_all(bind=engine)
 
@@ -474,6 +477,35 @@ async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "success", "message": f"Wallet {data.hedera_account_id} linked successfully to {data.player_id}!"}
+
+@app.post("/api/v1/link/unlink")
+def unlink_account(req: LinkUnlinkRequest, db: Session = Depends(get_db)):
+    incoming_discord_id = str(req.discord_id)
+
+    # Find the player record bound to this Discord ID
+    player = db.query(PlayerModel).filter(
+        PlayerModel.discord_id == incoming_discord_id
+    ).first()
+
+    if not player:
+        raise HTTPException(
+            status_code=404,
+            detail="No game profile is currently linked to this Discord account."
+        )
+
+    unlinked_player_id = player.player_id
+
+    # Clear Discord identity from PlayerModel
+    player.discord_id = None
+    player.discord_tag = None
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "unlinked_player_id": unlinked_player_id,
+        "message": f"Successfully unlinked profile '{unlinked_player_id}' from your Discord account."
+    }
 
 @app.get("/api/v1/player/{player_id}/wallet")
 def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
