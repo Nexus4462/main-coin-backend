@@ -390,27 +390,25 @@ def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
 
     target_player_id = link_record.player_id
 
-    # 2. Ensure player record exists in PostgreSQL
-    get_or_create_player(db, target_player_id)
+    # 2. Retrieve or create the target player instance
+    player = get_or_create_player(db, target_player_id)
 
-    # 3. Force direct UPDATE on the player row in PostgreSQL
-    db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).update({
-        "discord_id": str(req.discord_id),
-        "discord_tag": str(req.discord_tag)
-    }, synchronize_session=False)
+    # 3. Assign identity attributes directly
+    player.discord_id = str(req.discord_id)
+    player.discord_tag = str(req.discord_tag)
 
-    # 4. Mark code as consumed
+    # 4. Consume the link code
     link_record.is_used = True
 
-    # 5. Commit database transaction
+    # 5. Commit all pending session changes
     db.commit()
 
     return {
         "status": "success",
         "player_id": target_player_id,
-        "discord_id": str(req.discord_id),
-        "discord_tag": str(req.discord_tag),
-        "message": f"Successfully linked {req.discord_tag} to player {target_player_id}!"
+        "discord_id": player.discord_id,
+        "discord_tag": player.discord_tag,
+        "message": f"Successfully linked {player.discord_tag} to player {target_player_id}!"
     }
 
 @app.post("/api/wallet/link")
