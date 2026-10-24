@@ -71,8 +71,10 @@ class PlayerModel(Base):
     spendable_nex = Column(Float, default=0.0)
     total_nex_earned = Column(Float, default=0.0)
     total_hours_played = Column(Float, default=0.0)
-    prestige_level = Column(Integer, default=0)
-    created_at = Column(Float, default=time.time)
+    prestige_level = Column(Integer, default=1)
+    discord_id = Column(String, nullable=True, index=True)  # <-- Ensure this line exists
+    discord_tag = Column(String, nullable=True)             # <-- Ensure this line exists
+    hedera_account_id = Column(String, nullable=True)
 
 class ConnectedAccountModel(Base):
     __tablename__ = "connected_accounts"
@@ -440,10 +442,24 @@ def get_player_profile(player_id: str, db: Session = Depends(get_db)):
 # --- DISCORD USER LOOKUP ---
 @app.get("/api/v1/players/by-discord/{discord_id}")
 def get_player_by_discord_id(discord_id: str, db: Session = Depends(get_db)):
-    player = db.query(PlayerModel).filter(PlayerModel.discord_id == str(discord_id)).first()
+    try:
+        player = db.query(PlayerModel).filter(PlayerModel.discord_id == str(discord_id)).first()
+    except Exception as err:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Database schema issue querying discord_id: {str(err)}"
+        )
+
     if not player:
-        raise HTTPException(status_code=404, detail="No player account linked to this Discord ID.")
-    return {"player_id": player.player_id, "discord_id": player.discord_id}
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No player account linked to Discord ID '{discord_id}'."
+        )
+
+    return {
+        "player_id": player.player_id, 
+        "discord_id": getattr(player, "discord_id", discord_id)
+    }
 
 
 # --- ON-CHAIN REWARD CLAIM ENDPOINT ---
