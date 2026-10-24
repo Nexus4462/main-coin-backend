@@ -373,30 +373,36 @@ async def generate_link_code(player_id: str = Body(..., embed=True)):
     }
 
 @app.post("/api/v1/link/verify")
-async def verify_link_code(payload: dict = Body(...)):
-    link_code = payload.get("link_code", "").strip().upper()
-    discord_id = payload.get("discord_id")
-    discord_tag = payload.get("discord_tag")
-    
-    record = LINK_CODES.get(link_code)
-    if not record:
+def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
+    # 1. Locate the active link code
+    link_record = db.query(LinkCodeModel).filter(
+        LinkCodeModel.link_code == req.link_code.strip().upper(),
+        LinkCodeModel.is_used == False
+    ).first()
+
+    if not link_record:
         raise HTTPException(status_code=400, detail="Invalid or expired link code.")
-    
-    if datetime.utcnow() > record["expires"]:
-        del LINK_CODES[link_code]
-        raise HTTPException(status_code=400, detail="Link code has expired. Generate a new one in-game.")
-    
-    player_id = record["player_id"]
-    del LINK_CODES[link_code]
-    
+
+    # 2. Get the associated player
+    player = get_or_create_player(db, link_record.player_id)
+
+    # 3. Bind Discord identity to PlayerModel
+    player.discord_id = str(req.discord_id)
+    player.discord_tag = req.discord_tag
+
+    # 4. Mark code as used
+    link_record.is_used = True
+
+    # 5. Persist changes to PostgreSQL
+    db.commit()
+    db.refresh(player)
+
     return {
         "status": "success",
-        "player_id": player_id,
-        "discord_id": discord_id,
-        "discord_tag": discord_tag,
-        "level": 1,
-        "prestige": 0,
-        "message": f"Successfully linked {discord_tag} to player {player_id}!"
+        "player_id": player.player_id,
+        "discord_id": player.discord_id,
+        "discord_tag": player.discord_tag,
+        "message": f"Successfully linked {player.discord_tag} to player {player.player_id}!"
     }
 
 @app.post("/api/wallet/link")
