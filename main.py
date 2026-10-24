@@ -72,6 +72,15 @@ with engine.connect() as conn:
         conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_id VARCHAR;"))
         conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_tag VARCHAR;"))
         conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS hedera_account_id VARCHAR;"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS link_codes (
+                id SERIAL PRIMARY KEY,
+                link_code VARCHAR UNIQUE,
+                player_id VARCHAR,
+                is_used BOOLEAN DEFAULT FALSE,
+                created_at DOUBLE PRECISION
+            );
+        """))
         conn.commit()
     except Exception as e:
         print(f"Schema migration log: {e}")
@@ -155,6 +164,15 @@ class AuditLogModel(Base):
     player_id = Column(String, nullable=True)
     amount_nex = Column(Float, default=0.0)
     details = Column(String, nullable=True)
+
+class LinkCodeModel(Base):
+    __tablename__ = "link_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    link_code = Column(String, unique=True, index=True, nullable=False)
+    player_id = Column(String, nullable=False, index=True)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(Float, default=time.time)
 
 class LinkVerifyRequest(BaseModel):
     link_code: str
