@@ -64,6 +64,18 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+from sqlalchemy import text
+
+# Auto-migrate missing columns for existing PostgreSQL tables
+with engine.connect() as conn:
+    try:
+        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_id VARCHAR;"))
+        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_tag VARCHAR;"))
+        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS hedera_account_id VARCHAR;"))
+        conn.commit()
+    except Exception as e:
+        print(f"Schema migration log: {e}")
+
 class PlayerModel(Base):
     __tablename__ = "players"
 
@@ -444,22 +456,22 @@ def get_player_profile(player_id: str, db: Session = Depends(get_db)):
 def get_player_by_discord_id(discord_id: str, db: Session = Depends(get_db)):
     try:
         player = db.query(PlayerModel).filter(PlayerModel.discord_id == str(discord_id)).first()
+        if not player:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No player account linked to Discord ID '{discord_id}'."
+            )
+        return {
+            "player_id": player.player_id, 
+            "discord_id": player.discord_id
+        }
+    except HTTPException:
+        raise
     except Exception as err:
         raise HTTPException(
             status_code=500, 
-            detail=f"Database schema issue querying discord_id: {str(err)}"
+            detail=f"Database query failed: {str(err)}"
         )
-
-    if not player:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"No player account linked to Discord ID '{discord_id}'."
-        )
-
-    return {
-        "player_id": player.player_id, 
-        "discord_id": getattr(player, "discord_id", discord_id)
-    }
 
 
 # --- ON-CHAIN REWARD CLAIM ENDPOINT ---
