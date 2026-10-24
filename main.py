@@ -383,17 +383,19 @@ def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
     if not link_record:
         raise HTTPException(status_code=400, detail="Invalid or expired link code.")
 
-    # 2. Get the associated player
+    # 2. Get or create the target player
     player = get_or_create_player(db, link_record.player_id)
 
-    # 3. Bind Discord identity to PlayerModel
+    # 3. Bind Discord identity directly to PlayerModel
     player.discord_id = str(req.discord_id)
-    player.discord_tag = req.discord_tag
+    player.discord_tag = str(req.discord_tag)
 
     # 4. Mark code as used
     link_record.is_used = True
 
-    # 5. Persist changes to PostgreSQL
+    # 5. Force commit to PostgreSQL table
+    db.add(player)
+    db.add(link_record)
     db.commit()
     db.refresh(player)
 
