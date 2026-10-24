@@ -1,7 +1,7 @@
 import os
 import asyncio
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import httpx
 from dotenv import load_dotenv
@@ -21,6 +21,16 @@ async def health_check():
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- BOT STARTUP EVENT ---
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash command(s) across Discord.")
+    except Exception as e:
+        print(f"Failed to sync slash commands: {e}")
 
 # Helper: Resolve Linked Player ID dynamically
 async def get_player_id_from_discord(client: httpx.AsyncClient, discord_id: str) -> str | None:
@@ -199,3 +209,35 @@ async def link_wallet(interaction: discord.Interaction, account_id: str):
             await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ **Bot Error:** {str(e)}", ephemeral=True)
+
+# --- COMMAND: Unlink Account ---
+@bot.tree.command(name="unlink", description="Unlink your current game profile from this Discord account.")
+async def unlink(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    payload = {"discord_id": str(interaction.user.id)}
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            res = await client.post(f"{BACKEND_URL}/api/v1/link/unlink", json=payload)
+            data = res.json()
+
+            if res.status_code == 200 and data.get("status") == "success":
+                player_id = data.get("unlinked_player_id")
+                await interaction.followup.send(
+                    f"🔓 **Unlinked Successfully!** Profile **{player_id}** is no longer bound to your Discord identity. You can now use `/link` with a new code.",
+                    ephemeral=True
+                )
+            else:
+                detail = data.get("detail", "Failed to unlink profile.")
+                await interaction.followup.send(f"❌ **Error:** {detail}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ **Network Error:** {str(e)}", ephemeral=True)
+
+# --- EXECUTION ENTRYPOINT ---
+if __name__ == "__main__":
+    if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("❌ ERROR: DISCORD_BOT_TOKEN environment variable is missing or invalid.")
+    else:
+        print("🚀 Starting NEXUS Discord Bot...")
+        bot.run(DISCORD_TOKEN)
