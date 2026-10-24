@@ -382,53 +382,65 @@ HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+$"
 # 6. ACCOUNT LINKING & DISCORD IDENTITY ENDPOINTS
 # =====================================================================
 @app.post("/api/v1/link/generate")
-async def generate_link_code(player_id: str = Body(..., embed=True)):
-    code_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    link_code = f"NX-{code_suffix}"
-    expires_at = datetime.utcnow() + timedelta(minutes=10)
-    LINK_CODES[link_code] = {"player_id": player_id, "expires": expires_at}
-    
+def generate_link_code(req: dict, db: Session = Depends(get_db)):
+    player_id = req.get("player_id")
+    if not player_id:
+        raise HTTPException(status_code=400, detail="player_id is required.")
+
+    # Format code cleanly
+    clean_code = f"NX-{str(uuid.uuid4())[:4].upper()}"
+
+    # Create and persist record
+    new_link = LinkCodeModel(
+        link_code=clean_code,
+        player_id=player_id,
+        is_used=False
+    )
+    db.add(new_link)
+    db.commit()
+    db.refresh(new_link)
+
     return {
         "status": "success",
-        "link_code": link_code,
+        "link_code": clean_code,
         "expires_in_seconds": 600,
         "instructions": "Type `/link code:NX-XXXX` in Discord to bind your profile."
     }
 
 @app.post("/api/v1/link/verify")
 def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
-    # 1. Locate active, unused link code
+    clean_search_code = req.link_code.strip().upper()
+
+    # Query active unused code
     link_record = db.query(LinkCodeModel).filter(
-        LinkCodeModel.link_code == req.link_code.strip().upper(),
+        LinkCodeModel.link_code == clean_search_code,
         LinkCodeModel.is_used == False
     ).first()
 
     if not link_record:
-        raise HTTPException(status_code=400, detail="Invalid or expired link code.")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Link code '{clean_search_code}' is invalid, expired, or already consumed."
+        )
 
     target_player_id = link_record.player_id
 
-    try:
-        # 2. Query player directly inside the active session
-        player = db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).first()
-        if not player:
-            player = PlayerModel(player_id=target_player_id, spendable_nex=0.0, total_nex_earned=0.0)
-            db.add(player)
+    # Retrieve or initialize player profile
+    player = db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).first()
+    if not player:
+        player = PlayerModel(player_id=target_player_id)
+        db.add(player)
 
-        # 3. Assign identity attributes
-        player.discord_id = str(req.discord_id)
-        player.discord_tag = str(req.discord_tag)
+    # Bind Discord identity
+    player.discord_id = str(req.discord_id)
+    player.discord_tag = str(req.discord_tag)
 
-        # 4. Mark link code as used
-        link_record.is_used = True
+    # Mark code as consumed
+    link_record.is_used = True
 
-        # 5. Flush and Commit
-        db.commit()
-        db.refresh(player)
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database link commitment failed: {str(e)}")
+    # Commit changes to PostgreSQL
+    db.commit()
+    db.refresh(player)
 
     return {
         "status": "success",
