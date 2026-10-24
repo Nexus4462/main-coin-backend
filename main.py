@@ -10,6 +10,7 @@ import uvicorn
 import time
 import hmac
 import hashlib
+import uuid
 from fastapi import Header, HTTPException, Depends, status, FastAPI, Request, Query, Body
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
