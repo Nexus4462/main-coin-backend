@@ -422,15 +422,59 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
     return {"player_id": player_id, "hedera_wallet_id": connected.external_account_id}
 
 @app.get("/api/v1/player/{player_id}")
-async def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    player = get_or_create_player(db, player_id)
+def get_player_profile(player_id: str, db: Session = Depends(get_db)):
+    # Query directly without auto-creating missing players
+    player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail=f"Player ID '{player_id}' not found.")
+    
     return {
         "player_id": player.player_id,
-        "spendable_nex": round(player.spendable_nex, 4),
-        "total_nex_earned": round(player.total_nex_earned, 4),
-        "total_hours_played": round(player.total_hours_played, 2),
+        "spendable_nex": player.spendable_nex,
+        "total_nex_earned": player.total_nex_earned,
+        "total_hours_played": player.total_hours_played,
         "prestige_level": player.prestige_level,
-        "nametag_style": calculate_nametag_style(player, db)
+        "nametag_style": format_nametag_style(player)
+    }
+
+# --- DISCORD USER LOOKUP ---
+@app.get("/api/v1/players/by-discord/{discord_id}")
+def get_player_by_discord_id(discord_id: str, db: Session = Depends(get_db)):
+    player = db.query(PlayerModel).filter(PlayerModel.discord_id == discord_id).first()
+    if not player:
+        raise HTTPException(status_code=404, detail="No player account linked to this Discord ID.")
+    return {"player_id": player.player_id, "discord_id": player.discord_id}
+
+# --- ON-CHAIN REWARD CLAIM ENDPOINT ---
+@app.post("/api/v1/player/{player_id}/claim")
+def claim_player_rewards(player_id: str, db: Session = Depends(get_db)):
+    player = get_or_create_player(db, player_id)
+    
+    if player.spendable_nex <= 0:
+        raise HTTPException(status_code=400, detail="No spendable NEX balance available to claim.")
+    
+    target_wallet = player.hedera_account_id or "0.0.11035514"
+    claimed_amount = player.spendable_nex
+    
+    # Deduct off-chain spendable balance
+    player.spendable_nex = 0.0
+    
+    # Audit log entry
+    audit_entry = AuditLogModel(
+        action_type="ONCHAIN_CLAIM",
+        player_id=player.player_id,
+        amount_nex=claimed_amount,
+        details=f"Claimed {claimed_amount:.2f} NEX to Hedera Wallet {target_wallet}"
+    )
+    db.add(audit_entry)
+    db.commit()
+    
+    return {
+        "status": "success",
+        "player_id": player.player_id,
+        "amount": round(claimed_amount, 4),
+        "wallet": target_wallet,
+        "message": f"Successfully transferred {claimed_amount:.2f} NEX to {target_wallet}."
     }
 
 # =====================================================================

@@ -7,25 +7,22 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-# Load local environment variables from .env file
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 BACKEND_URL = "https://main-coin-backend.onrender.com"
 
-# --- FASTAPI HEALTH CHECK FOR RENDER PORT BINDING ---
+# FastAPI Health Check for Render Port Binding
 app = FastAPI()
 
 @app.get("/")
 async def health_check():
     return {"status": "NEXUS Core Online", "bot_active": True}
 
-# ----------------------------------------------------
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- HELPER: Resolve Linked Player ID ---
+# Helper: Resolve Linked Player ID dynamically
 async def get_player_id_from_discord(client: httpx.AsyncClient, discord_id: str) -> str | None:
     try:
         res = await client.get(f"{BACKEND_URL}/api/v1/players/by-discord/{discord_id}")
@@ -35,7 +32,7 @@ async def get_player_id_from_discord(client: httpx.AsyncClient, discord_id: str)
         print(f"Error resolving Discord ID: {e}")
     return None
 
-# --- PRIVACY COMMAND: Bind Account via Portal Code ---
+# --- COMMAND: Bind Account via Portal Code ---
 @bot.tree.command(name="link", description="Bind your NEX player account using your portal link code")
 @app_commands.describe(code="The code generated from the player portal (e.g. NX-UJ0R)")
 async def link_code_command(interaction: discord.Interaction, code: str):
@@ -62,15 +59,14 @@ async def link_code_command(interaction: discord.Interaction, code: str):
     except Exception as e:
         await interaction.followup.send(f"⚠️ **Network Error:** {str(e)}", ephemeral=True)
 
-# --- PRIVACY COMMAND: Check NEX Balance & Profile ---
+# --- COMMAND: Check NEX Balance & Profile ---
 @bot.tree.command(name="balance", description="Check your Nexus spendable NEX balance and player profile")
-@app_commands.describe(player_id="Optional: Nexus Player ID (e.g., salina_pilot_01). Leave blank if account is linked.")
+@app_commands.describe(player_id="Optional: Nexus Player ID. Leave blank if account is linked.")
 async def check_balance(interaction: discord.Interaction, player_id: str | None = None):
     await interaction.response.defer(ephemeral=True)
     
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            # If no player_id provided, look up by Discord ID
             target_player_id = player_id
             if not target_player_id:
                 target_player_id = await get_player_id_from_discord(client, str(interaction.user.id))
@@ -85,12 +81,10 @@ async def check_balance(interaction: discord.Interaction, player_id: str | None 
             
             if res.status_code == 200:
                 data = res.json()
-                
                 wallet_id = data.get("hedera_account_id", "0.0.11035514")
                 nex_token_id = "0.0.10991235"
                 onchain_balance = 0.0
                 
-                # Query Hedera Mirror Node for live on-chain token balance
                 try:
                     mirror_res = await client.get(
                         f"https://testnet.mirrornode.hedera.com/api/v1/accounts/{wallet_id}/tokens"
@@ -113,26 +107,10 @@ async def check_balance(interaction: discord.Interaction, player_id: str | None 
                     color=0x00F0FF
                 )
                 
-                embed.add_field(
-                    name="⛏️ Off-Chain Unclaimed", 
-                    value=f"**{data.get('spendable_nex', 0):,.2f} NEX**", 
-                    inline=True
-                )
-                embed.add_field(
-                    name="🔗 On-Chain (HashPack)", 
-                    value=f"**{onchain_balance:,.2f} NEX**", 
-                    inline=True
-                )
-                embed.add_field(
-                    name="🏆 Total Earned", 
-                    value=f"{data.get('total_nex_earned', 0):,.2f} NEX", 
-                    inline=True
-                )
-                embed.add_field(
-                    name="Hours Played", 
-                    value=f"{data.get('total_hours_played', 0)} hrs", 
-                    inline=True
-                )
+                embed.add_field(name="⛏️ Off-Chain Unclaimed", value=f"**{data.get('spendable_nex', 0):,.2f} NEX**", inline=True)
+                embed.add_field(name="🔗 On-Chain (HashPack)", value=f"**{onchain_balance:,.2f} NEX**", inline=True)
+                embed.add_field(name="🏆 Total Earned", value=f"{data.get('total_nex_earned', 0):,.2f} NEX", inline=True)
+                embed.add_field(name="Hours Played", value=f"{data.get('total_hours_played', 0)} hrs", inline=True)
                 
                 prestige = nametag_data.get('prestige_tag', '[NEX]')
                 embed.add_field(name="Prestige Rank", value=f"{prestige}", inline=False)
@@ -144,7 +122,7 @@ async def check_balance(interaction: discord.Interaction, player_id: str | None 
     except Exception as e:
         await interaction.followup.send(f"⚠️ Error connecting to Nexus Central Bank: {e}", ephemeral=True)
 
-# --- PRIVACY COMMAND: Claim Monthly Reward ---
+# --- COMMAND: Claim Monthly Reward ---
 @bot.tree.command(name="claim-monthly", description="Claim spendable NEX balance on-chain to your linked Hedera wallet")
 async def claim_monthly(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -180,11 +158,11 @@ async def claim_monthly(interaction: discord.Interaction):
                 await interaction.followup.send(f"❌ **Claim Error:** {err_detail}", ephemeral=True)
 
         except httpx.TimeoutException:
-            await interaction.followup.send("⏰ **Request Timed Out:** The backend or Hedera Testnet node took too long to respond.", ephemeral=True)
+            await interaction.followup.send("⏰ **Request Timed Out:** Backend took too long to respond.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ **Bot Error:** {str(e)}", ephemeral=True)
 
-# --- PRIVACY COMMAND: Link Wallet ---
+# --- COMMAND: Link Wallet ---
 @bot.tree.command(name="link-wallet", description="Link your Hedera Account ID (0.0.XXXXXX) to your NEX profile")
 @app_commands.describe(account_id="Your Hedera Account ID (e.g. 0.0.10770972)")
 async def link_wallet(interaction: discord.Interaction, account_id: str):
