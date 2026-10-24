@@ -379,7 +379,7 @@ async def generate_link_code(player_id: str = Body(..., embed=True)):
 
 @app.post("/api/v1/link/verify")
 def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
-    # 1. Locate the active link code
+    # 1. Locate active, unused link code
     link_record = db.query(LinkCodeModel).filter(
         LinkCodeModel.link_code == req.link_code.strip().upper(),
         LinkCodeModel.is_used == False
@@ -390,25 +390,34 @@ def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
 
     target_player_id = link_record.player_id
 
-    # 2. Retrieve or create the target player instance
-    player = get_or_create_player(db, target_player_id)
+    try:
+        # 2. Query player directly inside the active session
+        player = db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).first()
+        if not player:
+            player = PlayerModel(player_id=target_player_id, spendable_nex=0.0, total_nex_earned=0.0)
+            db.add(player)
 
-    # 3. Assign identity attributes directly
-    player.discord_id = str(req.discord_id)
-    player.discord_tag = str(req.discord_tag)
+        # 3. Assign identity attributes
+        player.discord_id = str(req.discord_id)
+        player.discord_tag = str(req.discord_tag)
 
-    # 4. Consume the link code
-    link_record.is_used = True
+        # 4. Mark link code as used
+        link_record.is_used = True
 
-    # 5. Commit all pending session changes
-    db.commit()
+        # 5. Flush and Commit
+        db.commit()
+        db.refresh(player)
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database link commitment failed: {str(e)}")
 
     return {
         "status": "success",
-        "player_id": target_player_id,
+        "player_id": player.player_id,
         "discord_id": player.discord_id,
         "discord_tag": player.discord_tag,
-        "message": f"Successfully linked {player.discord_tag} to player {target_player_id}!"
+        "message": f"Successfully linked {player.discord_tag} to player {player.player_id}!"
     }
 
 @app.post("/api/wallet/link")
