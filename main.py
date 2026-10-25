@@ -834,6 +834,27 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         "nametag_style": calculate_nametag_style(player, db)
     }
 
+@app.post("/api/v1/admin/clear-blackhole")
+def clear_blackhole_ips(admin_key: str = Query(...), db: Session = Depends(get_db)):
+    """
+    Admin endpoint to clear all blackholed IPs and reset processed nonces.
+    """
+    if admin_key != ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Secret Key.")
+    
+    cleared_ips_count = len(BLACKHOLE_IP_POOL)
+    cleared_nonces_count = len(PROCESSED_NONCES)
+    
+    BLACKHOLE_IP_POOL.clear()
+    PROCESSED_NONCES.clear()
+    
+    return {
+        "status": "success",
+        "message": "Blackhole pool and processed nonces successfully cleared.",
+        "cleared_ips": cleared_ips_count,
+        "cleared_nonces": cleared_nonces_count
+    }
+
 @app.post("/api/v1/store/buy")
 def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_db)):
     player = get_or_create_player(db, req.player_id)
