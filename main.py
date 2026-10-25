@@ -742,23 +742,33 @@ def root_dashboard(db: Session = Depends(get_db)):
 @app.post("/api/v1/telemetry")
 def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session = Depends(get_db)):
     client_ip = request.client.host or "127.0.0.1"
+
+    # 1. IP Blackhole Enforcement
+    if client_ip in BLACKHOLE_IP_POOL:
+        raise HTTPException(status_code=403, detail="Forbidden: IP address blackholed due to prior security violation.")
+
     current_time = int(time.time())
 
+    # 2. Operator Minting Check
     if IS_MINTING_PAUSED:
         raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
 
+    # 3. Payload Expiry Window (5 min)
     if abs(current_time - data.timestamp) > 300:
         trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
         raise HTTPException(status_code=401, detail="Expired telemetry payload window.")
 
+    # 4. Anti-Replay Nonce Check
     if data.nonce in PROCESSED_NONCES:
         BLACKHOLE_IP_POOL.add(client_ip)
         trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`. IP Blackholed.")
         raise HTTPException(status_code=401, detail="Replay payload detected.")
 
+    # 5. Playtime Validation
     if data.minutes_played > 60 or data.minutes_played <= 0:
         raise HTTPException(status_code=400, detail="Invalid gameplay duration telemetry.")
 
+    # 6. Cryptographic HMAC Signature Verification
     if data.signature == "dev_bypass_sig":
         pass
     else:
@@ -770,25 +780,36 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
             trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`). IP Blackholed.")
             raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
 
+    # Record valid nonce
     PROCESSED_NONCES.add(data.nonce)
 
+    # 7. Player Profile Retrieval & Hours Accounting
     player = get_or_create_player(db, data.player_id)
     hours_added = data.minutes_played / 60.0
     player.total_hours_played += hours_added
 
-    base_rate = 10.0
+    # 8. Economics: Base Rate + Boost + Level 100 APEX Decay (65% reduction)
+    base_rate = 10.0  # 10 NEX / hr base
     multiplier = 1.0
 
     if player.total_hours_played <= 24.0:
-        multiplier += 0.10
+        multiplier += 0.10  # 10% onboarding boost
 
     gross_earned_nex = (base_rate * hours_added) * multiplier
+
+    # Apply APEX decay if player level is 100
+    decay_applied = False
+    if getattr(player, "level", 0) >= 100:
+        gross_earned_nex *= 0.35  # 65% decay
+        decay_applied = True
+
     burned_fee = gross_earned_nex * 0.01
     net_earned_nex = gross_earned_nex - burned_fee
 
     player.spendable_nex += net_earned_nex
     player.total_nex_earned += net_earned_nex
 
+    # 9. Audit Logging
     try:
         audit_entry = AuditLogModel(
             action_type="TELEMETRY_MINT",
@@ -798,8 +819,9 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         )
         db.add(audit_entry)
         db.commit()
-    except Exception:
+    except Exception as e:
         db.rollback()
+        print(f"Audit log failed: {e}")
 
     return {
         "status": "success",
@@ -808,6 +830,7 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         "nex_burned": round(burned_fee, 4),
         "total_spendable_nex": round(player.spendable_nex, 4),
         "active_multiplier": round(multiplier, 2),
+        "decay_applied": decay_applied,
         "nametag_style": calculate_nametag_style(player, db)
     }
 

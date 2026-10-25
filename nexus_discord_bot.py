@@ -235,9 +235,14 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send(f"⚠️ **Network Error:** {str(e)}", ephemeral=True)
 
 # --- EXECUTION ENTRYPOINT ---
-if __name__ == "__main__":
-    if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ ERROR: DISCORD_BOT_TOKEN environment variable is missing or invalid.")
+@app.on_event("startup")
+async def start_discord_bot():
+    if DISCORD_TOKEN and DISCORD_TOKEN != "YOUR_BOT_TOKEN_HERE":
+        print("🚀 Launching Discord Bot background task...")
+        asyncio.create_task(bot.start(DISCORD_TOKEN))
     else:
-        print("🚀 Starting NEXUS Discord Bot...")
-        bot.run(DISCORD_TOKEN)
+        print("❌ ERROR: DISCORD_BOT_TOKEN is missing or invalid.")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("nexus_discord_bot:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
