@@ -267,18 +267,18 @@ async def clear_blackholes_on_startup():
 async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
-    # Always allow health, docs, and admin blackhole reset routes
+    # 1. ALWAYS allow health, docs, and admin blackhole reset routes
     exempt_paths = ["/health", "/docs", "/openapi.json", "/api/v1/admin/clear-blackhole"]
     if request.url.path in exempt_paths:
         return await call_next(request)
 
-    # Honeypot route trap
+    # 2. Trap honeypot path scanning
     if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
         blackhole_ip(client_ip, duration_seconds=300)
         trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
         return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
 
-    # Strict 403 for blackholed IPs on all other endpoints
+    # 3. Block blackholed IPs for all other endpoints
     if is_ip_blackholed(client_ip):
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN, 
