@@ -16,7 +16,7 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, String, Float, Integer, Boolean, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime, timedelta
 
@@ -33,7 +33,7 @@ ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_2026")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
-# IP Blackhole with 5-minute (300s) auto-unblock
+# Unified IP Blackhole storage with auto-unblock expiration
 BLACKHOLE_IP_TIMERS: Dict[str, float] = {}
 
 def is_ip_blackholed(ip: str) -> bool:
@@ -45,17 +45,14 @@ def is_ip_blackholed(ip: str) -> bool:
 
 def blackhole_ip(ip: str, duration_seconds: int = 300):
     BLACKHOLE_IP_TIMERS[ip] = time.time() + duration_seconds
+
 PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
-
 LINK_CODES: Dict[str, Any] = {}
 
 DEV_SECRET_KEY = os.getenv("DEV_SECRET_KEY", "nexus_dev_secret_2026")
 
 def verify_developer_key(x_developer_key: str = Header(...)):
-    """
-    Validates that incoming developer API requests carry the correct X-Developer-Key header
-    """
     if x_developer_key != DEV_SECRET_KEY:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -75,8 +72,6 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
-from sqlalchemy import text
 
 # Auto-migrate missing columns for existing PostgreSQL tables
 with engine.connect() as conn:
@@ -105,8 +100,8 @@ class PlayerModel(Base):
     total_nex_earned = Column(Float, default=0.0)
     total_hours_played = Column(Float, default=0.0)
     prestige_level = Column(Integer, default=1)
-    discord_id = Column(String, nullable=True, index=True)  # <-- Ensure this line exists
-    discord_tag = Column(String, nullable=True)             # <-- Ensure this line exists
+    discord_id = Column(String, nullable=True, index=True)
+    discord_tag = Column(String, nullable=True)
     hedera_account_id = Column(String, nullable=True)
 
 class ConnectedAccountModel(Base):
@@ -186,15 +181,6 @@ class LinkCodeModel(Base):
     is_used = Column(Boolean, default=False)
     created_at = Column(Float, default=time.time)
 
-class LinkVerifyRequest(BaseModel):
-    link_code: str
-    discord_id: str
-    discord_tag: str
-
-class LinkUnlinkRequest(BaseModel):
-    discord_id: str
-
-# Initialize database tables ONCE after all models are defined
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -281,12 +267,13 @@ async def clear_blackholes_on_startup():
 async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
+    # Trap malicious path scanning into blackhole pool
     if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
-        BLACKHOLE_IP_POOL.add(client_ip)
+        blackhole_ip(client_ip, duration_seconds=300)
         trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
         return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
 
-    if client_ip in BLACKHOLE_IP_POOL:
+    if is_ip_blackholed(client_ip):
         return JSONResponse(status_code=200, content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"})
 
     response = await call_next(request)
@@ -333,7 +320,7 @@ def calculate_nametag_style(player: PlayerModel, db: Session) -> dict:
     except Exception:
         db.rollback()
 
-    if emblem is None and player.total_hours_played < 24.0:
+    if emblem is None and (player.total_hours_played or 0.0) < 24.0:
         emblem = "⚡"
 
     if player.prestige_level > 0:
@@ -397,6 +384,14 @@ class GameCosmeticRequest(BaseModel):
     asset_url: str
     category: str = "skin"
 
+class LinkVerifyRequest(BaseModel):
+    link_code: str
+    discord_id: str
+    discord_tag: str
+
+class LinkUnlinkRequest(BaseModel):
+    discord_id: str
+
 HEDERA_ACCOUNT_REGEX = r"^0\.0\.\d+$"
 
 # =====================================================================
@@ -408,10 +403,8 @@ def generate_link_code(req: dict, db: Session = Depends(get_db)):
     if not player_id:
         raise HTTPException(status_code=400, detail="player_id is required.")
 
-    # Format code cleanly
     clean_code = f"NX-{str(uuid.uuid4())[:4].upper()}"
 
-    # Create and persist record
     new_link = LinkCodeModel(
         link_code=clean_code,
         player_id=player_id,
@@ -432,7 +425,6 @@ def generate_link_code(req: dict, db: Session = Depends(get_db)):
 def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
     clean_search_code = req.link_code.strip().upper()
 
-    # Query active unused code
     link_record = db.query(LinkCodeModel).filter(
         LinkCodeModel.link_code == clean_search_code,
         LinkCodeModel.is_used == False
@@ -446,20 +438,15 @@ def verify_link_code(req: LinkVerifyRequest, db: Session = Depends(get_db)):
 
     target_player_id = link_record.player_id
 
-    # Retrieve or initialize player profile
     player = db.query(PlayerModel).filter(PlayerModel.player_id == target_player_id).first()
     if not player:
         player = PlayerModel(player_id=target_player_id)
         db.add(player)
 
-    # Bind Discord identity
     player.discord_id = str(req.discord_id)
     player.discord_tag = str(req.discord_tag)
-
-    # Mark code as consumed
     link_record.is_used = True
 
-    # Commit changes to PostgreSQL
     db.commit()
     db.refresh(player)
 
@@ -499,7 +486,6 @@ async def link_wallet(data: WalletLinkRequest, db: Session = Depends(get_db)):
 def unlink_account(req: LinkUnlinkRequest, db: Session = Depends(get_db)):
     incoming_discord_id = str(req.discord_id)
 
-    # Find the player record bound to this Discord ID
     player = db.query(PlayerModel).filter(
         PlayerModel.discord_id == incoming_discord_id
     ).first()
@@ -511,8 +497,6 @@ def unlink_account(req: LinkUnlinkRequest, db: Session = Depends(get_db)):
         )
 
     unlinked_player_id = player.player_id
-
-    # Clear Discord identity from PlayerModel
     player.discord_id = None
     player.discord_tag = None
 
@@ -538,7 +522,6 @@ def get_player_wallet(player_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/player/{player_id}")
 def get_player_profile(player_id: str, db: Session = Depends(get_db)):
-    # Query directly without auto-creating missing players
     player = db.query(PlayerModel).filter(PlayerModel.player_id == player_id).first()
     if not player:
         raise HTTPException(status_code=404, detail=f"Player ID '{player_id}' not found.")
@@ -549,10 +532,9 @@ def get_player_profile(player_id: str, db: Session = Depends(get_db)):
         "total_nex_earned": player.total_nex_earned,
         "total_hours_played": player.total_hours_played,
         "prestige_level": player.prestige_level,
-        "nametag_style": format_nametag_style(player)
+        "nametag_style": calculate_nametag_style(player, db)
     }
 
-# --- DISCORD USER LOOKUP ---
 @app.get("/api/v1/players/by-discord/{discord_id}")
 def get_player_by_discord_id(discord_id: str, db: Session = Depends(get_db)):
     try:
@@ -574,8 +556,6 @@ def get_player_by_discord_id(discord_id: str, db: Session = Depends(get_db)):
             detail=f"Database query failed: {str(err)}"
         )
 
-
-# --- ON-CHAIN REWARD CLAIM ENDPOINT ---
 @app.post("/api/v1/player/{player_id}/claim")
 def claim_player_rewards(player_id: str, db: Session = Depends(get_db)):
     player = get_or_create_player(db, player_id)
@@ -586,19 +566,16 @@ def claim_player_rewards(player_id: str, db: Session = Depends(get_db)):
     target_wallet = getattr(player, "hedera_account_id", None) or "0.0.11035514"
     claimed_amount = float(player.spendable_nex)
     
-    # Deduct off-chain spendable balance
     player.spendable_nex = 0.0
     
-    # Safely write audit log if AuditLogModel is available
     try:
-        if "AuditLogModel" in globals():
-            audit_entry = AuditLogModel(
-                action_type="ONCHAIN_CLAIM",
-                player_id=player.player_id,
-                amount_nex=claimed_amount,
-                details=f"Claimed {claimed_amount:.2f} NEX to Hedera Wallet {target_wallet}"
-            )
-            db.add(audit_entry)
+        audit_entry = AuditLogModel(
+            action_type="ONCHAIN_CLAIM",
+            player_id=player.player_id,
+            amount_nex=claimed_amount,
+            details=f"Claimed {claimed_amount:.2f} NEX to Hedera Wallet {target_wallet}"
+        )
+        db.add(audit_entry)
     except Exception as audit_err:
         print(f"Audit log bypassed: {audit_err}")
 
@@ -746,7 +723,7 @@ def root_dashboard(db: Session = Depends(get_db)):
                 <div class="card">
                     <h3>Network Metrics</h3>
                     <p>Registered Players: <strong>{total_players}</strong></p>
-                    <p>Trapped Bot IPs: <strong style="color: #f85149;">{len(BLACKHOLE_IP_POOL)}</strong></p>
+                    <p>Trapped Bot IPs: <strong style="color: #f85149;">{len(BLACKHOLE_IP_TIMERS)}</strong></p>
                     <p>Circulating {TOKEN_TICKER}:</p>
                     <div class="metric">{circulating_nex:,.2f} {TOKEN_TICKER}</div>
                 </div>
@@ -760,7 +737,7 @@ def root_dashboard(db: Session = Depends(get_db)):
 def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session = Depends(get_db)):
     client_ip = request.client.host or "127.0.0.1"
 
-    # 1. IP Blackhole Enforcement (Auto-expiring)
+    # 1. IP Blackhole Enforcement
     if is_ip_blackholed(client_ip):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
@@ -815,7 +792,6 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
                 detail="Invalid telemetry cryptographic signature."
             )
 
-    # Record nonce
     PROCESSED_NONCES.add(data.nonce)
 
     # 7. Safe Database Operations
@@ -823,18 +799,16 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         player = get_or_create_player(db, data.player_id)
         hours_added = data.minutes_played / 60.0
 
-        if hasattr(player, 'total_hours_played'):
-            player.total_hours_played = (player.total_hours_played or 0.0) + hours_added
+        player.total_hours_played = (player.total_hours_played or 0.0) + hours_added
 
         base_rate = 10.0
         multiplier = 1.0
 
-        if getattr(player, 'total_hours_played', 0.0) <= 24.0:
+        if (player.total_hours_played or 0.0) <= 24.0:
             multiplier += 0.10
 
         gross_earned_nex = (base_rate * hours_added) * multiplier
 
-        # Level 100 APEX 65% decay
         decay_applied = False
         if getattr(player, 'level', 0) >= 100:
             gross_earned_nex *= 0.35
@@ -843,10 +817,8 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         burned_fee = gross_earned_nex * 0.01
         net_earned_nex = gross_earned_nex - burned_fee
 
-        if hasattr(player, 'spendable_nex'):
-            player.spendable_nex = (player.spendable_nex or 0.0) + net_earned_nex
-        if hasattr(player, 'total_nex_earned'):
-            player.total_nex_earned = (player.total_nex_earned or 0.0) + net_earned_nex
+        player.spendable_nex = (player.spendable_nex or 0.0) + net_earned_nex
+        player.total_nex_earned = (player.total_nex_earned or 0.0) + net_earned_nex
 
         db.commit()
     except Exception as db_err:
@@ -858,19 +830,14 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         )
 
     # 8. Safe Nametag Resolver
-    nametag_style = "DEFAULT"
-    try:
-        if "calculate_nametag_style" in globals():
-            nametag_style = calculate_nametag_style(player, db)
-    except Exception:
-        pass
+    nametag_style = calculate_nametag_style(player, db)
 
     return {
         "status": "success",
         "player_id": player.player_id,
         "nex_earned": round(net_earned_nex, 4),
         "nex_burned": round(burned_fee, 4),
-        "total_spendable_nex": round(getattr(player, 'spendable_nex', 0.0), 4),
+        "total_spendable_nex": round(player.spendable_nex, 4),
         "active_multiplier": round(multiplier, 2),
         "decay_applied": decay_applied,
         "nametag_style": nametag_style
@@ -878,16 +845,13 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
 
 @app.post("/api/v1/admin/clear-blackhole")
 def clear_blackhole_ips(admin_key: str = Query(...), db: Session = Depends(get_db)):
-    """
-    Admin endpoint to clear all blackholed IPs and reset processed nonces.
-    """
     if admin_key != ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Secret Key.")
     
-    cleared_ips_count = len(BLACKHOLE_IP_POOL)
+    cleared_ips_count = len(BLACKHOLE_IP_TIMERS)
     cleared_nonces_count = len(PROCESSED_NONCES)
     
-    BLACKHOLE_IP_POOL.clear()
+    BLACKHOLE_IP_TIMERS.clear()
     PROCESSED_NONCES.clear()
     
     return {
@@ -901,7 +865,6 @@ def clear_blackhole_ips(admin_key: str = Query(...), db: Session = Depends(get_d
 def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_db)):
     player = get_or_create_player(db, req.player_id)
     
-    # Check core store catalog first
     item = db.query(StoreCatalogModel).filter(StoreCatalogModel.item_id == req.item_id, StoreCatalogModel.is_active == True).first()
 
     price = 0.0
@@ -913,12 +876,10 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
         item_name = item.name
         target_dev_id = item.developer_id
     else:
-        # Check developer cosmetics if not found in core catalog
         dev_item = db.query(GameCosmeticModel).filter(GameCosmeticModel.item_key == req.item_id).first()
         if dev_item:
             price = dev_item.price_nex
             item_name = dev_item.item_name
-            # Map game_id back to registered game to locate developer_id
             reg_game = db.query(RegisteredGameModel).filter(RegisteredGameModel.game_id == dev_item.game_id).first()
             target_dev_id = reg_game.developer_id if reg_game else dev_item.game_id
         else:
@@ -929,11 +890,9 @@ def execute_store_purchase(req: StorePurchaseRequest, db: Session = Depends(get_
 
     player.spendable_nex -= price
 
-    # Deflationary Sink: 13% Burn, 87% Recirculate
     burned_amount = price * 0.13
     recirculated_amount = price * 0.87
 
-    # Allocate 87% recirculation to developer account
     developer = db.query(DeveloperModel).filter(DeveloperModel.developer_id == target_dev_id).first()
     if not developer:
         developer = DeveloperModel(
@@ -1028,6 +987,6 @@ def get_admin_summary(db: Session = Depends(get_db)):
         "total_circulating_nex": sum(p.spendable_nex for p in players),
         "total_lifetime_nex_minted": sum(p.total_nex_earned for p in players),
         "total_developer_unclaimed_nex": sum(d.earned_nex_balance for d in developers),
-        "trapped_bot_ips_count": len(BLACKHOLE_IP_POOL),
-        "trapped_bot_ips": list(BLACKHOLE_IP_POOL)
+        "trapped_bot_ips_count": len(BLACKHOLE_IP_TIMERS),
+        "trapped_bot_ips": list(BLACKHOLE_IP_TIMERS.keys())
     }
