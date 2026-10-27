@@ -267,14 +267,18 @@ async def clear_blackholes_on_startup():
 async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
-    # Trap malicious path scanning into blackhole pool
+    # Honeypot route trap
     if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
         blackhole_ip(client_ip, duration_seconds=300)
         trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
         return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
 
+    # Strict 403 response for blackholed IPs (instead of mock 200)
     if is_ip_blackholed(client_ip):
-        return JSONResponse(status_code=200, content={"status": "success", "processed_nex": 0.0, "sync_status": "synced"})
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            content={"detail": "Forbidden: IP temporarily blackholed due to security violation."}
+        )
 
     response = await call_next(request)
     return response
