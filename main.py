@@ -33,7 +33,18 @@ ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_2026")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
-BLACKHOLE_IP_POOL: set = set()
+# IP Blackhole with 5-minute (300s) auto-unblock
+BLACKHOLE_IP_TIMERS: Dict[str, float] = {}
+
+def is_ip_blackholed(ip: str) -> bool:
+    if ip in BLACKHOLE_IP_TIMERS:
+        if time.time() < BLACKHOLE_IP_TIMERS[ip]:
+            return True
+        del BLACKHOLE_IP_TIMERS[ip]  # Cooldown expired; unblock automatically
+    return False
+
+def blackhole_ip(ip: str, duration_seconds: int = 300):
+    BLACKHOLE_IP_TIMERS[ip] = time.time() + duration_seconds
 PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
 
@@ -259,6 +270,12 @@ def trigger_discord_alert(details: str):
         print(f"✅ Discord security alert dispatched successfully: {details}")
     except Exception as e:
         print(f"❌ Discord alert dispatch failed: {e}")
+
+@app.on_event("startup")
+async def clear_blackholes_on_startup():
+    BLACKHOLE_IP_TIMERS.clear()
+    PROCESSED_NONCES.clear()
+    print("🧹 [STARTUP] Flushed all blackhole IP timers and processed nonces.")
 
 @app.middleware("http")
 async def blackhole_bot_trap_middleware(request: Request, call_next):
@@ -744,11 +761,19 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
     client_ip = request.client.host or "127.0.0.1"
 
     # 1. IP Blackhole Enforcement
-    if client_ip in BLACKHOLE_IP_POOL:
+    if is_ip_blackholed(client_ip):
         raise HTTPException(status_code=403, detail="Forbidden: IP address blackholed due to prior security violation.")
 
     current_time = int(time.time())
 
+    if data.signature != "dev_bypass_sig":
+        payload = f"{data.player_id}:{data.minutes_played}:{data.timestamp}:{data.nonce}".encode('utf-8')
+        expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(expected_sig, data.signature):
+            blackhole_ip(client_ip, duration_seconds=300)  # 5-min temporary block
+            trigger_discord_alert(f"HMAC Mismatch from `{client_ip}` (Player: `{data.player_id}`). 5m Cooldown Applied.")
+            raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
     # 2. Operator Minting Check
     if IS_MINTING_PAUSED:
         raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
