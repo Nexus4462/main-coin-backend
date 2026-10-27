@@ -853,8 +853,13 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
     }
 
 @app.post("/api/v1/admin/clear-blackhole")
-def clear_blackhole_ips(admin_key: str = Query(...), db: Session = Depends(get_db)):
-    if admin_key != ADMIN_SECRET_KEY:
+def clear_blackhole_ips(
+    admin_key: Optional[str] = Query(None),
+    x_admin_key: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    provided_key = admin_key or x_admin_key
+    if provided_key != ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Secret Key.")
     
     cleared_ips_count = len(BLACKHOLE_IP_TIMERS)
