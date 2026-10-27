@@ -760,40 +760,47 @@ def root_dashboard(db: Session = Depends(get_db)):
 def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session = Depends(get_db)):
     client_ip = request.client.host or "127.0.0.1"
 
-    # 1. IP Blackhole Enforcement
+    # 1. IP Blackhole Enforcement (Auto-expiring)
     if is_ip_blackholed(client_ip):
-        raise HTTPException(status_code=403, detail="Forbidden: IP address blackholed due to prior security violation.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Forbidden: IP temporarily blackholed due to security violation."
+        )
 
     current_time = int(time.time())
 
-    if data.signature != "dev_bypass_sig":
-        payload = f"{data.player_id}:{data.minutes_played}:{data.timestamp}:{data.nonce}".encode('utf-8')
-        expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
-
-        if not hmac.compare_digest(expected_sig, data.signature):
-            blackhole_ip(client_ip, duration_seconds=300)  # 5-min temporary block
-            trigger_discord_alert(f"HMAC Mismatch from `{client_ip}` (Player: `{data.player_id}`). 5m Cooldown Applied.")
-            raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
-    # 2. Operator Minting Check
+    # 2. Global Minting Pause Check
     if IS_MINTING_PAUSED:
-        raise HTTPException(status_code=503, detail="Central Bank minting is currently paused by the Operator.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
+            detail="Central Bank minting is currently paused by the Operator."
+        )
 
-    # 3. Payload Expiry Window (5 min)
+    # 3. Payload Timestamp Window Check (5 min)
     if abs(current_time - data.timestamp) > 300:
         trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
-        raise HTTPException(status_code=401, detail="Expired telemetry payload window.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Expired telemetry payload window."
+        )
 
     # 4. Anti-Replay Nonce Check
     if data.nonce in PROCESSED_NONCES:
-        BLACKHOLE_IP_POOL.add(client_ip)
-        trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`. IP Blackholed.")
-        raise HTTPException(status_code=401, detail="Replay payload detected.")
+        blackhole_ip(client_ip, duration_seconds=300)
+        trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Replay payload detected."
+        )
 
-    # 5. Playtime Validation
+    # 5. Playtime Bounds Check
     if data.minutes_played > 60 or data.minutes_played <= 0:
-        raise HTTPException(status_code=400, detail="Invalid gameplay duration telemetry.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Invalid gameplay duration telemetry."
+        )
 
-    # 6. Cryptographic HMAC Signature Verification
+    # 6. HMAC Signature Cryptographic Validation
     if data.signature == "dev_bypass_sig":
         pass
     else:
@@ -801,62 +808,72 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
 
         if not hmac.compare_digest(expected_sig, data.signature):
-            BLACKHOLE_IP_POOL.add(client_ip)
-            trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`). IP Blackholed.")
-            raise HTTPException(status_code=401, detail="Invalid telemetry cryptographic signature.")
+            blackhole_ip(client_ip, duration_seconds=300)
+            trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`).")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="Invalid telemetry cryptographic signature."
+            )
 
-    # Record valid nonce
+    # Record nonce
     PROCESSED_NONCES.add(data.nonce)
 
-    # 7. Player Profile Retrieval & Hours Accounting
-    player = get_or_create_player(db, data.player_id)
-    hours_added = data.minutes_played / 60.0
-    player.total_hours_played += hours_added
-
-    # 8. Economics: Base Rate + Boost + Level 100 APEX Decay (65% reduction)
-    base_rate = 10.0  # 10 NEX / hr base
-    multiplier = 1.0
-
-    if player.total_hours_played <= 24.0:
-        multiplier += 0.10  # 10% onboarding boost
-
-    gross_earned_nex = (base_rate * hours_added) * multiplier
-
-    # Apply APEX decay if player level is 100
-    decay_applied = False
-    if getattr(player, "level", 0) >= 100:
-        gross_earned_nex *= 0.35  # 65% decay
-        decay_applied = True
-
-    burned_fee = gross_earned_nex * 0.01
-    net_earned_nex = gross_earned_nex - burned_fee
-
-    player.spendable_nex += net_earned_nex
-    player.total_nex_earned += net_earned_nex
-
-    # 9. Audit Logging
+    # 7. Safe Database Operations
     try:
-        audit_entry = AuditLogModel(
-            action_type="TELEMETRY_MINT",
-            player_id=player.player_id,
-            amount_nex=net_earned_nex,
-            details=f"Earned {net_earned_nex:.2f} NEX ({burned_fee:.2f} NEX burned) for {data.minutes_played}m play time"
-        )
-        db.add(audit_entry)
+        player = get_or_create_player(db, data.player_id)
+        hours_added = data.minutes_played / 60.0
+
+        if hasattr(player, 'total_hours_played'):
+            player.total_hours_played = (player.total_hours_played or 0.0) + hours_added
+
+        base_rate = 10.0
+        multiplier = 1.0
+
+        if getattr(player, 'total_hours_played', 0.0) <= 24.0:
+            multiplier += 0.10
+
+        gross_earned_nex = (base_rate * hours_added) * multiplier
+
+        # Level 100 APEX 65% decay
+        decay_applied = False
+        if getattr(player, 'level', 0) >= 100:
+            gross_earned_nex *= 0.35
+            decay_applied = True
+
+        burned_fee = gross_earned_nex * 0.01
+        net_earned_nex = gross_earned_nex - burned_fee
+
+        if hasattr(player, 'spendable_nex'):
+            player.spendable_nex = (player.spendable_nex or 0.0) + net_earned_nex
+        if hasattr(player, 'total_nex_earned'):
+            player.total_nex_earned = (player.total_nex_earned or 0.0) + net_earned_nex
+
         db.commit()
-    except Exception as e:
+    except Exception as db_err:
         db.rollback()
-        print(f"Audit log failed: {e}")
+        print(f"❌ DB Transaction Error: {db_err}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Database transaction failure during telemetry processing."
+        )
+
+    # 8. Safe Nametag Resolver
+    nametag_style = "DEFAULT"
+    try:
+        if "calculate_nametag_style" in globals():
+            nametag_style = calculate_nametag_style(player, db)
+    except Exception:
+        pass
 
     return {
         "status": "success",
         "player_id": player.player_id,
         "nex_earned": round(net_earned_nex, 4),
         "nex_burned": round(burned_fee, 4),
-        "total_spendable_nex": round(player.spendable_nex, 4),
+        "total_spendable_nex": round(getattr(player, 'spendable_nex', 0.0), 4),
         "active_multiplier": round(multiplier, 2),
         "decay_applied": decay_applied,
-        "nametag_style": calculate_nametag_style(player, db)
+        "nametag_style": nametag_style
     }
 
 @app.post("/api/v1/admin/clear-blackhole")
