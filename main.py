@@ -26,25 +26,25 @@ from datetime import datetime, timedelta
 TOKEN_NAME = "Nexus"
 TOKEN_TICKER = "NEX"
 
-_raw_hmac_secret = os.getenv("HMAC_SECRET") or os.getenv("NEXUS_HMAC_SECRET") or "nexus_dev_secret_2026"
+_raw_hmac_secret = os.getenv("NEXUS_HMAC_SECRET") or os.getenv("HMAC_SECRET") or "nexus_dev_secret_2026"
 NEXUS_HMAC_SECRET = _raw_hmac_secret.encode('utf-8')
 
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "nexus_admin_secret_2026")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./game_economy.db")
 
-# Unified IP Blackhole storage with auto-unblock expiration
+#Unified IP Blackhole storage with auto-unblock expiration
 BLACKHOLE_IP_TIMERS: Dict[str, float] = {}
 
-def is_ip_blackholed(ip: str) -> bool:
-    if ip in BLACKHOLE_IP_TIMERS:
-        if time.time() < BLACKHOLE_IP_TIMERS[ip]:
-            return True
-        del BLACKHOLE_IP_TIMERS[ip]  # Cooldown expired; unblock automatically
-    return False
+#def is_ip_blackholed(ip: str) -> bool:
+#    if ip in BLACKHOLE_IP_TIMERS:
+#        if time.time() < BLACKHOLE_IP_TIMERS[ip]:
+#            return True
+#        del BLACKHOLE_IP_TIMERS[ip]  # Cooldown expired; unblock automatically
+#    return False
 
-def blackhole_ip(ip: str, duration_seconds: int = 300):
-    BLACKHOLE_IP_TIMERS[ip] = time.time() + duration_seconds
+#def blackhole_ip(ip: str, duration_seconds: int = 300):
+ #   BLACKHOLE_IP_TIMERS[ip] = time.time() + duration_seconds
 
 PROCESSED_NONCES: set = set()
 IS_MINTING_PAUSED: bool = False
@@ -237,11 +237,11 @@ app = FastAPI(
 )
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+ #   CORSMiddleware,
+  #  allow_origins=["*"],
+   # allow_credentials=True,
+    #allow_methods=["*"],
+    #allow_headers=["*"],
 )
 
 def trigger_discord_alert(details: str):
@@ -259,34 +259,35 @@ def trigger_discord_alert(details: str):
 
 @app.on_event("startup")
 async def clear_blackholes_on_startup():
-    BLACKHOLE_IP_TIMERS.clear()
-    PROCESSED_NONCES.clear()
-    print("🧹 [STARTUP] Flushed all blackhole IP timers and processed nonces.")
+ #   BLACKHOLE_IP_TIMERS.clear()
+  #  PROCESSED_NONCES.clear()
+   # print("🧹 [STARTUP] Flushed all blackhole IP timers and processed nonces.")
+    pass
 
 @app.middleware("http")
 async def blackhole_bot_trap_middleware(request: Request, call_next):
     client_ip = request.client.host or "127.0.0.1"
 
     # 1. ALWAYS allow health, docs, and admin blackhole reset routes
-    exempt_paths = ["/health", "/docs", "/openapi.json", "/api/v1/admin/clear-blackhole"]
-    if request.url.path in exempt_paths:
-        return await call_next(request)
+  #  exempt_paths = ["/health", "/docs", "/openapi.json", "/api/v1/admin/clear-blackhole"]
+   # if request.url.path in exempt_paths:
+    #    return await call_next(request)
 
     # 2. Trap honeypot path scanning
-    if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
-        blackhole_ip(client_ip, duration_seconds=300)
-        trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
-        return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
+    #if request.url.path in ["/admin/login.php", "/api/v1/debug_coins", "/wp-admin", "/pma"]:
+     #   blackhole_ip(client_ip, duration_seconds=300)
+      #  trigger_discord_alert(f"Bot trapped in Honeypot: `{client_ip}` requested `{request.url.path}`.")
+       # return JSONResponse(status_code=200, content={"status": "success", "message": "Debug state logged."})
 
     # 3. Block blackholed IPs for all other endpoints
-    if is_ip_blackholed(client_ip):
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            content={"detail": "Forbidden: IP temporarily blackholed due to security violation."}
-        )
+    #if is_ip_blackholed(client_ip):
+        #return JSONResponse(
+         #   status_code=status.HTTP_403_FORBIDDEN, 
+          #  content={"detail": "Forbidden: IP temporarily blackholed due to security violation."}
+        #)
 
-    response = await call_next(request)
-    return response
+    #response = await call_next(request)
+    #return response
 
 # =====================================================================
 # 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
@@ -747,22 +748,22 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
     client_ip = request.client.host or "127.0.0.1"
 
     # 1. IP Blackhole Enforcement
-    if is_ip_blackholed(client_ip):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Forbidden: IP temporarily blackholed due to security violation."
-        )
+    #if is_ip_blackholed(client_ip):
+     #   raise HTTPException(
+      #      status_code=status.HTTP_403_FORBIDDEN, 
+       #     detail="Forbidden: IP temporarily blackholed due to security violation."
+        #)
 
     current_time = int(time.time())
 
-    # 2. Global Minting Pause Check
+    #2. Global Minting Pause Check
     if IS_MINTING_PAUSED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
             detail="Central Bank minting is currently paused by the Operator."
         )
 
-    # 3. Payload Timestamp Window Check (5 min)
+     #3. Payload Timestamp Window Check (5 min)
     if abs(current_time - data.timestamp) > 300:
         trigger_discord_alert(f"Expired Telemetry Payload from `{client_ip}` (Player: `{data.player_id}`).")
         raise HTTPException(
@@ -770,7 +771,7 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
             detail="Expired telemetry payload window."
         )
 
-    # 4. Anti-Replay Nonce Check
+     #4. Anti-Replay Nonce Check
     if data.nonce in PROCESSED_NONCES:
         blackhole_ip(client_ip, duration_seconds=300)
         trigger_discord_alert(f"Replay Attack Prevented: Re-used Nonce from `{client_ip}`.")
@@ -794,7 +795,7 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
         expected_sig = hmac.new(NEXUS_HMAC_SECRET, payload, hashlib.sha256).hexdigest()
 
         if not hmac.compare_digest(expected_sig, data.signature):
-            blackhole_ip(client_ip, duration_seconds=300)
+           # blackhole_ip(client_ip, duration_seconds=300)
             trigger_discord_alert(f"HMAC Signature Mismatch from IP `{client_ip}` (Player: `{data.player_id}`).")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
@@ -854,18 +855,18 @@ def process_telemetry(data: TelemetryPingRequest, request: Request, db: Session 
 
 @app.post("/api/v1/admin/clear-blackhole")
 def clear_blackhole_ips(
-    admin_key: Optional[str] = Query(None),
-    x_admin_key: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+   # admin_key: Optional[str] = Query(None),
+   # x_admin_key: Optional[str] = Header(None),
+   # db: Session = Depends(get_db)
 ):
     provided_key = admin_key or x_admin_key
     if provided_key != ADMIN_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid Admin Secret Key.")
     
-    cleared_ips_count = len(BLACKHOLE_IP_TIMERS)
+    #cleared_ips_count = len(BLACKHOLE_IP_TIMERS)
     cleared_nonces_count = len(PROCESSED_NONCES)
     
-    BLACKHOLE_IP_TIMERS.clear()
+    #BLACKHOLE_IP_TIMERS.clear()
     PROCESSED_NONCES.clear()
     
     return {
