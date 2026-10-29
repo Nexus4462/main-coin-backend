@@ -73,24 +73,24 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Auto-migrate missing columns for existing PostgreSQL tables
-with engine.connect() as conn:
+# Auto-migrate missing columns for existing PostgreSQL tables safely
+if "postgresql" in DATABASE_URL or "postgres" in DATABASE_URL:
     try:
-        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_id VARCHAR;"))
-        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_tag VARCHAR;"))
-        conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS hedera_account_id VARCHAR;"))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS link_codes (
-                id SERIAL PRIMARY KEY,
-                link_code VARCHAR UNIQUE,
-                player_id VARCHAR,
-                is_used BOOLEAN DEFAULT FALSE,
-                created_at DOUBLE PRECISION
-            );
-        """))
-        conn.commit()
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS discord_tag VARCHAR;"))
+            conn.execute(text("ALTER TABLE players ADD COLUMN IF NOT EXISTS hedera_account_id VARCHAR;"))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS link_codes (
+                    id SERIAL PRIMARY KEY,
+                    link_code VARCHAR UNIQUE,
+                    player_id VARCHAR,
+                    is_used BOOLEAN DEFAULT FALSE,
+                    created_at DOUBLE PRECISION
+                );
+            """))
     except Exception as e:
-        print(f"Schema migration log: {e}")
+        print(f"⚠️ Postgres schema migration log: {e}")
 
 class PlayerModel(Base):
     __tablename__ = "players"
@@ -244,6 +244,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- ISOLATED HEALTH CHECK ROUTE ---
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "NEX Central Bank Engine"}
+
 def trigger_discord_alert(details: str):
     if not DISCORD_WEBHOOK_URL:
         print(f"⚠️ [SECURITY ALERT - NO WEBHOOK CONFIGURED]: {details}")
@@ -262,6 +267,7 @@ async def clear_blackholes_on_startup():
  #   BLACKHOLE_IP_TIMERS.clear()
   #  PROCESSED_NONCES.clear()
    # print("🧹 [STARTUP] Flushed all blackhole IP timers and processed nonces.")
+    #pass
     pass
 
 @app.middleware("http")
@@ -288,6 +294,7 @@ async def blackhole_bot_trap_middleware(request: Request, call_next):
 
     #response = await call_next(request)
     #return response
+    #pass
 
 # =====================================================================
 # 4. HELPER UTILITIES & NAMETAG FORMATTING ENGINE
